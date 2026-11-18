@@ -35,8 +35,6 @@ usage: slot_buffer_probe.py SERVER_BINARY PORT [LOG]
   footprint; see `poe smoke-slot-buffers`
 """
 
-import ctypes
-import ctypes.util
 import os
 import resource
 import socket
@@ -44,7 +42,7 @@ import sys
 import threading
 import time
 
-from probelib import fail, phase, server, stamp
+from probelib import fail, footprint_kb, phase, server, stamp
 
 stamp("slot_buffer_probe: FAIL")
 
@@ -67,34 +65,6 @@ GREW = 128 * 1024
 LIMIT = 2.5
 # Time for the loop to close the slots whose clients closed, and to settle.
 SETTLE = 1.5
-
-
-class _RusageInfoV0(ctypes.Structure):
-    """`struct rusage_info_v0` from <sys/resource.h>, for proc_pid_rusage."""
-    _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
-        "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins",
-        "wired_size", "resident_size", "phys_footprint", "proc_start_abstime",
-        "proc_exit_abstime")]
-
-
-def footprint_kb(pid):
-    """What the server holds in memory, in KB, counting pages the system
-    compressed or swapped out: those leave RSS without being given back, and
-    a busy machine does it in the middle of a run (plain RSS read 2.36 on the
-    unfixed server once, against 3.62-3.88 here). macOS reports it as the
-    physical footprint, to the byte through `proc_pid_rusage` (vmmap prints
-    it rounded to a tenth of a gigabyte past one), Linux as VmRSS plus
-    VmSwap."""
-    if sys.platform == "darwin":
-        libproc = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib",
-                              use_errno=True)
-        info = _RusageInfoV0()
-        if libproc.proc_pid_rusage(pid, 0, ctypes.byref(info)) != 0:  # RUSAGE_INFO_V0
-            raise OSError(ctypes.get_errno(), "proc_pid_rusage(%d)" % pid)
-        return info.phys_footprint // 1024
-    with open("/proc/%d/status" % pid) as fh:
-        fields = dict(line.split(":", 1) for line in fh if ":" in line)
-    return sum(int(fields[k].split()[0]) for k in ("VmRSS", "VmSwap") if k in fields)
 
 
 def read_response(sock):

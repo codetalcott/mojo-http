@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """What every smoke probe needs, written once: the phase stamp, `fail`, a
-server watched while it starts, a free port, an SSE reader and a WebSocket
-client. Standard library only. The free port comes from below the kernel's
+server watched while it starts, a free port, a process's memory, an SSE
+reader and a WebSocket client. Standard library only. The free port comes from below the kernel's
 ephemeral range, whose ports go to whatever connects next (`free_port`).
 
     from probelib import WebSocket, fail, phase, stamp
@@ -34,6 +34,8 @@ because sabotage harnesses match those lines.
 import base64
 import collections
 import contextlib
+import ctypes
+import ctypes.util
 import errno
 import hashlib
 import http.client
@@ -760,6 +762,37 @@ class WebSocket:
             self.sock.close()
 
 
+# --- memory ------------------------------------------------------------------------
+
+
+class _RusageInfoV0(ctypes.Structure):
+    """`struct rusage_info_v0` from <sys/resource.h>, for proc_pid_rusage."""
+    _fields_ = [("uuid", ctypes.c_uint8 * 16)] + [(name, ctypes.c_uint64) for name in (
+        "user_time", "system_time", "pkg_idle_wkups", "interrupt_wkups", "pageins",
+        "wired_size", "resident_size", "phys_footprint", "proc_start_abstime",
+        "proc_exit_abstime")]
+
+
+def footprint_kb(pid):
+    """What a process holds in memory, in KB, counting pages the system
+    compressed or swapped out: those leave RSS without being given back, and
+    a busy machine does it in the middle of a run (plain RSS read 2.36 on the
+    unfixed server once, against 3.62-3.88, in slot_buffer_probe.py). macOS
+    reports it as the physical footprint, to the byte through
+    `proc_pid_rusage` (vmmap prints it rounded to a tenth of a gigabyte past
+    one), Linux as VmRSS plus VmSwap."""
+    if sys.platform == "darwin":
+        libproc = ctypes.CDLL(ctypes.util.find_library("proc") or "/usr/lib/libproc.dylib",
+                              use_errno=True)
+        info = _RusageInfoV0()
+        if libproc.proc_pid_rusage(pid, 0, ctypes.byref(info)) != 0:  # RUSAGE_INFO_V0
+            raise OSError(ctypes.get_errno(), "proc_pid_rusage(%d)" % pid)
+        return info.phys_footprint // 1024
+    with open("/proc/%d/status" % pid) as fh:
+        fields = dict(line.split(":", 1) for line in fh if ":" in line)
+    return sum(int(fields[k].split()[0]) for k in ("VmRSS", "VmSwap") if k in fields)
+
+
 # --- selftest ----------------------------------------------------------------------
 
 
@@ -1260,6 +1293,27 @@ def _selftest():
     check("a connection closed before any head: status_line None", ws.status_line is None)
     ws.close()
     t.join(5)
+
+    print("probelib selftest: a process's memory")
+    grower = subprocess.Popen(
+        [sys.executable, "-c", "import sys\n"
+         "print('ready', flush=True); sys.stdin.readline()\n"
+         "b = bytearray(64 << 20)\n"
+         "for i in range(0, len(b), 4096): b[i] = 1\n"
+         "print('grew', flush=True); sys.stdin.readline()\n"],
+        stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+    try:
+        grower.stdout.readline()
+        before = footprint_kb(grower.pid)
+        grower.stdin.write("\n")
+        grower.stdin.flush()
+        grower.stdout.readline()
+        after = footprint_kb(grower.pid)
+        check("another process's footprint rises by the 64 MB it touched (%d KB -> %d KB)"
+              % (before, after), after - before >= 60 * 1024)
+    finally:
+        grower.kill()
+        grower.wait()
 
     print("probelib selftest: " + ("PASS" if ok else "FAIL"))
     return ok

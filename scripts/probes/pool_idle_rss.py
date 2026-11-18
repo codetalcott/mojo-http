@@ -7,11 +7,14 @@ usage: uv run --no-sync python scripts/probes/pool_idle_rss.py
            [--rounds 3] [--json PATH] [--max-pool-bytes-per-slot B]
            [--emit TASK] [--no-realtime] [--app SPEC --app-dir DIR]
            [--versus-app SPEC --versus-app-dir DIR]
+       python3 scripts/probes/pool_idle_rss.py --selftest
 
 Each cell is a fresh `m0serve hold_app:application --app-dir scripts/smoke
 --realtime --max-connections N --blocking-threads T`, asked its health path
-once, left a second to settle, and its resident set read five times, the
-median kept. Nothing else connects, so what grows with N is what the server
+once, left a second to settle, and its memory read five times, the median
+kept: the footprint (`probelib.footprint_kb`: macOS's physical footprint,
+VmRSS plus VmSwap on Linux), which a page the system compresses does not
+leave. Nothing else connects, so what grows with N is what the server
 reserves per slot before a connection arrives -- the tables sized by the
 count -- and not a connection's buffers, which are sized on first use.
 
@@ -21,10 +24,25 @@ fitted to about 61000 (SPEC C25), and the slope is taken over the fitted
 counts, never the asked ones.
 
 Two arms, `--blocking-threads 0` and `--blocking-threads T`, alternated
-within each round so a drift across the run lands on both. Per arm and
-round the figure is the slope, bytes a slot: the resident set at the
-largest count less the smallest, over the counts' difference. The pool's
-share is the pooled arm's median slope less the pool-less arm's.
+within each round so a drift across the run lands on both. Each cell's
+figure is its LEAST reading over the rounds, and an arm's is the slope,
+bytes a slot, between its cells at the largest count and the smallest. The
+pool's share is the pooled arm's slope less the pool-less arm's.
+
+The least, not the median, because what moves a start's idle memory only
+ever adds to it, in steps the slot count does not set. Each pool thread
+compiles the executor shim, which frees about 3.6 MB as it finishes, and
+whether the allocator reuses those pages for the next compile is not the
+slot count's doing; load makes it likelier that it does not. In 31 rounds
+on CI's macOS runner two of the eight-thread arm's cells read 3.4 and
+4.2 MB above their medians, and no other cell on either leg moved 0.6 MB;
+the runner fits 16384 to about 9950 slots, so one round read 432 B a slot
+against a bound of 128. Each start is fresh, so a cell is wrong only when
+every start of it jumped. A gate (a bound given) refuses fewer than three
+rounds, and a failed one names any cell whose starts spread more than half
+a step. A loaded machine can leave a step in every start (on an M4 under 14
+spinning processes every one of 30 did), and no count of rounds measures
+there. `--selftest` replays readings CI recorded through the estimator.
 
 `--no-realtime` drops `--realtime`, under which every handler -- the
 loop's and each pool thread's -- sizes its stream registries by the count.
@@ -95,24 +113,16 @@ def fitted(binary, app, count, threads):
     return report["server"]["max_connections"]
 
 
-def rss_kb(pid):
-    out = subprocess.run(["ps", "-o", "rss=", "-p", str(pid)],
-                         capture_output=True, text=True).stdout.strip()
-    if not out:
-        fail(f"no process {pid}")
-    return int(out)
-
-
 def measure(binary, app, count, threads, logdir):
     port = probelib.free_port()
-    log = Path(logdir) / f"rss-{threads}-{count}.log"
+    log = Path(logdir) / f"idle-{threads}-{count}.log"
     argv = [binary, *app, "--port", str(port), *flags(count, threads)]
     url = f"http://127.0.0.1:{port}/health"
     with probelib.server(argv, url, timeout=60.0, log=log, cwd=REPO) as proc:
         time.sleep(1.0)
         reads = []
         for _ in range(5):
-            reads.append(rss_kb(proc.pid))
+            reads.append(probelib.footprint_kb(proc.pid))
             time.sleep(0.2)
     return statistics.median(reads)
 
@@ -126,6 +136,47 @@ def slope(points):
     return (points[hi] - points[lo]) * 1024.0 / (hi - lo)
 
 
+GATE_ROUNDS = 3
+"""The fewest rounds a bound is judged on: one start's jump fails a gate on
+one (#702's first macOS attempt read 432 B a slot, its rerun 18)."""
+COMPILE_MB = 3.6
+"""What one start's pool thread can leave resident: a compile of the shim
+peaks 4.16 MB above what it keeps (0.56, tracemalloc, CPython 3.14.7)."""
+
+
+def least(rounds, name):
+    """An arm's cells, each its least reading over `rounds`."""
+    return {n: min(r[name][n] for r in rounds) for n in rounds[0][name]}
+
+
+def estimate(rounds, names):
+    """Each arm's bytes a slot, and the share (the second arm's less the
+    first's), from `rounds`: one {arm name: {slots: KB}} a round."""
+    per_slot = {name: slope(least(rounds, name)) for name in names}
+    return per_slot, per_slot[names[1]] - per_slot[names[0]]
+
+
+def unsettled(rounds, names):
+    """The cells whose starts spread more than half a compile's step, each
+    (arm, slots, MB): where the least may not be the floor."""
+    out = []
+    for name in names:
+        for n in sorted(rounds[0][name]):
+            reads = [r[name][n] for r in rounds]
+            spread = (max(reads) - min(reads)) / 1024
+            if spread > COMPILE_MB / 2:
+                out.append((name, n, spread))
+    return out
+
+
+def too_few_rounds(rounds, gating):
+    """Why a verdict on this many rounds cannot be believed, or None."""
+    if gating and rounds < GATE_ROUNDS:
+        return (f"a bound is judged on at least {GATE_ROUNDS} rounds, not {rounds}: "
+                "one start's idle memory can jump by a compile's freed pages")
+    return None
+
+
 def emit(task, name, value, limit=None):
     cmd = [sys.executable, str(REPO / "scripts" / "emit.py"), name,
            f"{value:.0f}", "--unit", "B", "--task", task]
@@ -134,7 +185,81 @@ def emit(task, name, value, limit=None):
     subprocess.run(cmd, check=False)
 
 
+# Readings from CI's macOS smoke leg, MB as the probe printed them, each
+# {arm: {fitted slots: MB}}: the runner fits 16384 to 9960 and 9936.
+TYPICAL = {"threads 0": {1024: 33.8, 9960: 43.5}, "threads 8": {1024: 37.0, 9936: 46.9}}
+"""Run 44144565659: the pool's share 23 B a slot."""
+RERUN = {"threads 0": {1024: 33.9, 9960: 43.8}, "threads 8": {1024: 37.3, 9936: 47.3}}
+"""#702's macOS rerun, run 44228142612 attempt 2: 18."""
+JUMPED_HIGH = {"threads 0": {1024: 33.8, 9960: 43.8}, "threads 8": {1024: 37.4, 9936: 51.0}}
+"""The same commit's first attempt: the pooled arm's 9936 cell 3.7 MB high,
+432, a failed gate on code that measured 18 and 25."""
+JUMPED_LOW = {"threads 0": {1024: 33.8, 9960: 43.4}, "threads 8": {1024: 40.4, 9936: 46.8}}
+"""Run 44124414612: the pooled arm's 1024 cell 3.4 MB high, -379, which
+would have hidden a regression of 500 B a slot."""
+LOADED_LOW = [29.7, 40.6, 37.2]
+"""An M4 under six spinning processes: the eight-thread arm's 1024 cell
+over three starts, none of them at its unloaded 25.1."""
+
+
+def _selftest():
+    names = ["threads 0", "threads 8"]
+
+    def kb(*rounds):
+        return [{a: {n: mb * 1024 for n, mb in cells.items()} for a, cells in r.items()}
+                for r in rounds]
+
+    def plus(r, arm, slots, mb):
+        out = {a: dict(cells) for a, cells in r.items()}
+        out[arm][slots] += mb
+        return out
+
+    def regressed(r, per_slot=200):
+        lo, hi = sorted(r["threads 8"])
+        return plus(r, "threads 8", hi, per_slot * (hi - lo) / 2**20)
+
+    problems = []
+
+    def expect(label, rounds, passes, bound=128):
+        _, share = estimate(kb(*rounds), names)
+        if (share <= bound) != passes:
+            problems.append(f"{label}: the share read {share:.0f} B a slot against {bound}, "
+                            f"wanted it {'within' if passes else 'past'} the bound")
+
+    expect("#702's jumped start beside two others", [JUMPED_HIGH, RERUN, TYPICAL], True)
+    expect("two starts of three carrying a compile in the same cell",
+           [JUMPED_HIGH, plus(RERUN, "threads 8", 9936, COMPILE_MB), TYPICAL], True)
+    expect("a regression of 200 B a slot beside a jumped low cell",
+           [regressed(JUMPED_LOW), regressed(TYPICAL), regressed(RERUN)], False)
+    expect("a regression of 200 B a slot beside two jumped low cells",
+           [regressed(JUMPED_LOW), regressed(plus(TYPICAL, "threads 8", 1024, COMPILE_MB)),
+            regressed(RERUN)], False)
+    expect("a regression of 200 B a slot, nothing jumped",
+           [regressed(TYPICAL), regressed(RERUN), regressed(TYPICAL)], False)
+    quiet = kb(TYPICAL, RERUN, TYPICAL)
+    if unsettled(quiet, names):
+        problems.append(f"quiet starts were called unsettled: {unsettled(quiet, names)}")
+    loaded = kb(*[plus(TYPICAL, "threads 8", 1024, mb - TYPICAL["threads 8"][1024])
+                  for mb in LOADED_LOW])
+    if [(a, n) for a, n, _ in unsettled(loaded, names)] != [("threads 8", 1024)]:
+        problems.append(f"a loaded machine's cell was not named: {unsettled(loaded, names)}")
+    if too_few_rounds(1, gating=True) is None:
+        problems.append("a gate on one round was not refused")
+    if too_few_rounds(3, gating=True) is not None:
+        problems.append("a gate on three rounds was refused")
+    if too_few_rounds(1, gating=False) is not None:
+        problems.append("a measurement with no bound, on one round, was refused")
+    for p in problems:
+        print(f"pool_idle_rss selftest FAIL: {p}")
+    if problems:
+        sys.exit(1)
+    print("pool_idle_rss selftest OK")
+
+
 def main():
+    if "--selftest" in sys.argv[1:]:
+        _selftest()
+        return
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     ap.add_argument("--binary", default="bin/m0serve")
     ap.add_argument("--counts", default="1024,16384,65536")
@@ -152,6 +277,9 @@ def main():
     ap.add_argument("--versus-app", help="compare --app with this application, both without a pool")
     ap.add_argument("--versus-app-dir", help="its directory, relative to the repository")
     args = ap.parse_args()
+    refusal = too_few_rounds(args.rounds, gating=args.max_pool_bytes_per_slot is not None)
+    if refusal:
+        ap.error(refusal)
     if args.no_realtime:
         REALTIME.clear()
     if args.app:
@@ -185,8 +313,10 @@ def main():
 
     cells = {name: {fit[(name, c)]: [] for c in counts} for name in names}
     slopes = {name: [] for name in names}
+    rounds = []
     with tempfile.TemporaryDirectory(prefix="pool-idle-rss-") as logdir:
         for r in range(args.rounds):
+            rounds.append({})
             order = arms if r % 2 == 0 else list(reversed(arms))
             for name, app, threads in order:
                 points = {}
@@ -194,18 +324,18 @@ def main():
                     kb = measure(binary, app, c, threads, logdir)
                     points[fit[(name, c)]] = kb
                     cells[name][fit[(name, c)]].append(kb)
+                rounds[-1][name] = points
                 slopes[name].append(slope(points))
                 print(f"round {r + 1} {name}: " + ", ".join(
                     f"{n} slots {kb / 1024:.1f} MB" for n, kb in sorted(points.items()))
                     + f"; {slopes[name][-1]:.0f} B a slot")
 
-    per_slot = {name: statistics.median(slopes[name]) for name in names}
-    share = per_slot[names[1]] - per_slot[names[0]]
+    per_slot, share = estimate(rounds, names)
     print()
-    print(f"{'slots':>8}  " + "  ".join(f"{name[:24]:>24}" for name in names))
-    for c in counts:
-        row = [statistics.median(cells[name][fit[(name, c)]]) / 1024 for name in names]
-        print(f"{c:>8}  " + "  ".join(f"{mb:>21.1f} MB" for mb in row))
+    for name in names:
+        for n, kb in sorted(least(rounds, name).items()):
+            print(f"{name}, {n} slots: least {kb / 1024:.1f} MB of "
+                  + ", ".join(f"{v / 1024:.1f}" for v in cells[name][n]))
     for name in names:
         spread = f"{min(slopes[name]):.0f}-{max(slopes[name]):.0f}"
         print(f"{name}: {per_slot[name]:.0f} B a slot (rounds {spread})")
@@ -219,8 +349,10 @@ def main():
             "counts": counts,
             "arms": names,
             "fitted": {name: {str(c): fit[(name, c)] for c in counts} for name in names},
-            "rss_kb": {name: {str(n): v for n, v in cells[name].items()} for name in names},
-            "bytes_per_slot": {name: slopes[name] for name in names},
+            "footprint_kb": {name: {str(n): v for n, v in cells[name].items()} for name in names},
+            "estimator": "each cell's least reading over the rounds, then the slope",
+            "bytes_per_slot_by_round": {name: slopes[name] for name in names},
+            "bytes_per_slot": per_slot,
             "share_bytes_per_slot": share,
             "measured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         }, indent=1) + "\n")
@@ -232,8 +364,14 @@ def main():
              args.max_pool_bytes_per_slot)
 
     if args.max_pool_bytes_per_slot is not None and share > args.max_pool_bytes_per_slot:
+        why = "".join(f"; {name} at {n} slots spread {mb:.1f} MB over its starts"
+                      for name, n, mb in unsettled(rounds, names))
+        if why:
+            why += (f", more than half the {COMPILE_MB} MB a pool thread's shim compile can "
+                    "leave, so its least may not be its floor: a machine this busy can leave "
+                    "one in every start")
         fail(f"{what} is {share:.0f} B a slot, above "
-             f"{args.max_pool_bytes_per_slot:.0f}")
+             f"{args.max_pool_bytes_per_slot:.0f}" + why)
 
 
 if __name__ == "__main__":
