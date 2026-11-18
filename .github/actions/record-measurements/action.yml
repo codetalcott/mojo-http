@@ -11,6 +11,12 @@
 # they were separate workflow steps, and keeps both running when the run is
 # cancelled. check_ci_measurements_are_collected in scripts/check_docs.py
 # reads this file as part of each job that uses it.
+#
+# The upload carries `continue-on-error: true`, as the render carries
+# `|| true`: a recording failure must never turn a job whose gates passed
+# red. On #651 every smoke in smoke-gateway passed and the job failed at
+# `FinalizeArtifact: Unable to make request: ECONNRESET`, a network error
+# on GitHub's side, which kept the pull request from merging for weeks.
 name: Record the measurements
 description: >-
   Render the job's $M0_RESULTS into its run summary and its log with
@@ -32,6 +38,7 @@ runs:
         python3 scripts/emit.py --summary "$M0_RESULTS" || true
     - name: Upload the measurements
       if: always()
+      continue-on-error: true
       uses: actions/upload-artifact@v7
       with:
         name: ${{ inputs.name }}

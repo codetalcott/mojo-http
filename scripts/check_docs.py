@@ -1996,6 +1996,15 @@ def measurement_problems(pyproject, workflow, recorders=(), actions=None):
                 f"test.yml job `{job}` uploads a `ci-results-*` artifact, but "
                 f"not `{target}`, the file its M0_RESULTS names — with "
                 "`if-no-files-found: ignore` that uploads nothing, silently")
+        elif not any(re.search(r"^\s+continue-on-error:[ \t]*true[ \t]*$", step, re.M)
+                     for step in uploads):
+            problems.append(
+                f"test.yml job `{job}` uploads its measurements in a step "
+                "without `continue-on-error: true`, so an upload GitHub "
+                "cannot finish turns the job red after its gates passed: "
+                "#651's smoke-gateway passed every smoke and failed at "
+                "`FinalizeArtifact: ECONNRESET`. A recording failure must "
+                "never fail a gate.")
     if "scripts/emit.py --selftest" not in code:
         problems.append(
             "scripts/emit.py --selftest is not run by test.yml. A silent "
@@ -2719,6 +2728,7 @@ _INLINE_RECORD = (
     "{pad}    python3 scripts/emit.py --summary \"$M0_RESULTS\" >> \"$GITHUB_STEP_SUMMARY\" || true\n"
     "{pad}- name: Upload the measurements\n"
     "{pad}  if: always()\n"
+    "{pad}  continue-on-error: true\n"
     "{pad}  uses: actions/upload-artifact@v7\n"
     "{pad}  with:\n"
     "{pad}    name: {name}\n"
@@ -2755,6 +2765,10 @@ _ACTION_LAPSES = [
     ("its render commented out",
      lambda t: re.sub(r"^([ \t]*)(python3 scripts/emit\.py --summary)", r"\1# \2", t, flags=re.M)),
     ("its upload commented out", _step_edit("uses: actions/upload-artifact@", _commented)),
+    ("its upload able to fail the job, as #651's was",
+     _step_edit("uses: actions/upload-artifact@",
+                lambda item, pad: re.sub(r"^[ \t]*continue-on-error:[^\n]*\n", "", item,
+                                         flags=re.M))),
     ("its upload naming another file",
      lambda t: t.replace("path: ci-results.jsonl", "path: results.jsonl")),
     ("its upload named by itself, not by the job calling it",

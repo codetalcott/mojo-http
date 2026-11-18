@@ -350,7 +350,9 @@ with a headroom column, and uploads it through
 recording failure must never turn a passing gate red, nor be mistaken for
 the thing measured — and is a **no-op without `$M0_RESULTS`**;
 `check_ci_measurements_are_collected` refuses a job that collects without it,
-a file never rendered, a missing upload, and the recorder's `--selftest` (a
+a file never rendered, a missing upload, an upload without
+`continue-on-error: true` (GitHub's ECONNRESET failed #651's passing
+smokes), and the recorder's `--selftest` (a
 CI step, beside `warning_ratchet.py --selftest` and `binfmt.py --selftest`)
 dropping out. Adding a measurement is one line beside the `echo` that
 already computes it. Do not add one that can fail, and do not make a gate

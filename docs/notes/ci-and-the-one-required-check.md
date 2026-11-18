@@ -38,7 +38,10 @@ Three properties are load-bearing:
   prints. `check_ci_measurements_are_collected` refuses that, plus a
   collected-but-never-rendered file, a missing upload, and the recorder's
   own selftest dropping out of CI — per job since review record B16, when
-  one job's render had lapsed unseen for two weeks.
+  one job's render had lapsed unseen for two weeks. It refuses an upload
+  step without `continue-on-error: true` too: on #651 (2026-11-01) every
+  smoke in smoke-gateway passed and the job failed when GitHub reset the
+  artifact upload (`FinalizeArtifact: ECONNRESET`).
 - **`--selftest` is a CI step**, beside `warning_ratchet.py --selftest` and
   `binfmt.py --selftest`, for the reason those are: a regression in a
   recorder drops records rather than failing. It caught two real bugs while
