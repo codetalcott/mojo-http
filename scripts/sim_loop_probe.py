@@ -6,7 +6,12 @@
 Holds an SSE stream on /events for SECONDS while sampling /now SAMPLES
 times, and prints one line:
 
-    frames=16 gaps=0 worst_now_ms=0
+    frames=16 gaps=0 worst_now_ms=0 second_now_ms=0 worst_connect_ms=0 worst_request_ms=0
+
+`second_now_ms` is the second-worst sample, the one `smoke-sim-loop`
+judges, and the last two say where the worst sample spent its time
+(`probelib.placement_summary`, the function `ramp_probe.py` and
+`host_probe.py` print through).
 
 Exits 1 naming the problem if the stream carried no frames or its step ids
 are not contiguous. The caller asserts on the numbers; this only refuses
@@ -25,23 +30,32 @@ frames is NOT refused here, because that is the result the phase exists to
 detect -- the caller says what it means. A missing `x-worker` header, a
 non-200, or a gap in any stream's ids is malformed and exits 1.
 
-Why SAMPLES is 24. The smoke's on-the-loop arm requires the worst sample to
-wait at least 100 ms behind a 200 ms step that starts every 250 ms, and a
-request waits that long only if it lands in the step's first half. This used
-to take three samples 300 ms apart, argued from the chance of missing the
-step ENTIRELY (1 in 125 for all three). What actually carried it was a phase
-lock: a sample that waits out a step returns 50 ms before the next one
-starts, so a fixed 300 ms gap lands the next request at a step's start, and
-40 local runs saw 169-200 ms every time. A runner whose sleeps overshoot
-breaks the lock, and CI's macOS smoke failed at 98 ms on a change that did not
-touch the app. Three samples at RANDOM phases, which is what a broken lock
-approximates, failed 19 of 60 local runs: about 0.68 per sample of landing
-too late. At 24 samples that is 0.68^24, about 1 in 10,000 runs; 16 would
-have been 1 in 460, on a smoke every pull request runs on two runners.
+Why the second-worst, and why SAMPLES is 32. A request waits 100 ms or
+more behind a 200 ms step that starts every 250 ms only if it lands in the
+step's first half. Off the loop no request should wait at all, but a shared
+macOS runner stalls a single sample for 80 to 190 ms about once in a
+thousand (`ramp_probe.py` and `host_probe.py` say where), and the worst of
+the samples has no margin for one: on 2026-11-16 `Tests` run 43811357500
+failed this gate at 113 ms on a change that did not touch the app, where
+the worst sample of 37 other macOS runs had been 40 ms or less and every
+Ubuntu run's 0. On an M4 the same tail appears with the cores taken,
+whether the load is the step or a spinner in another process, and the two
+are the same size: it is the machine, not the step. So the off-the-loop
+arm reads the second-worst, which one stall does not move.
 
-The gap between samples is drawn at random rather than fixed, so the
-arithmetic rests on independent draws rather than on a lock that a slow
-runner can break in either direction.
+The on-the-loop arm must reach the bound by the same number, or it proves
+nothing about the statistic the gate judges, and there it needs two
+samples to land early, not one. The probability that a sample lands too
+late is about 0.68, measured: three samples at random phases failed 19
+of 60 local runs. Of 24 samples, fewer than two land early in about one
+run in 850; of 32, about one in 14,000, where the worst of 24 missed about
+one in 10,000. It used to take three samples, and a phase lock with the
+probe's fixed gap hid how few that was: a sample that waits out a step
+returns 50 ms before the next one starts, so a fixed 300 ms gap landed
+each request at a step's start, and a runner whose sleeps overshoot broke
+the lock. The gap between samples is drawn at random, so the arithmetic
+rests on independent draws rather than on a lock a slow runner can break
+in either direction.
 """
 import http.client
 import random
@@ -50,7 +64,7 @@ import sys
 import threading
 import time
 
-from probelib import phase, sse_events, stamp
+from probelib import fail, phase, placement_summary, sse_events, stamp
 
 # Which phase is running, for the crash handler. This probe's phases fail
 # for opposite reasons -- OPENING the stream failing is a server that never
@@ -59,24 +73,28 @@ from probelib import phase, sse_events, stamp
 # http.client call a traceback names identically.
 stamp("sim_loop_probe: FAIL", stream=sys.stderr)
 
-SAMPLES = 24
+SAMPLES = 32
 
 
 def sample_now(port, out):
-    """Worst of SAMPLES /now round trips, in milliseconds."""
-    worst = 0.0
+    """SAMPLES /now round trips, each `(total, connect, request)` in
+    milliseconds, appended to `out` as they are taken."""
     for _ in range(SAMPLES):
         phase("sampling /now")
         conn = http.client.HTTPConnection("127.0.0.1", port, timeout=30)
         t0 = time.perf_counter()
         try:
+            conn.connect()
+            t1 = time.perf_counter()
             conn.request("GET", "/now")
             conn.getresponse().read()
+            t2 = time.perf_counter()
         finally:
             conn.close()
-        worst = max(worst, (time.perf_counter() - t0) * 1000.0)
+        # The total ends after the close, as it always did.
+        total = (time.perf_counter() - t0) * 1000.0
+        out.append((total, (t1 - t0) * 1000.0, (t2 - t1) * 1000.0))
         time.sleep(random.uniform(0.05, 0.3))
-    out.append(worst)
 
 
 def open_stream(port, secs):
@@ -117,8 +135,8 @@ def one_stream(port, secs):
     conn, resp, sock = open_stream(port, secs)
 
     # Sample while the stream is held, so the two overlap in time.
-    worst = []
-    sampler = threading.Thread(target=sample_now, args=(port, worst))
+    samples = []
+    sampler = threading.Thread(target=sample_now, args=(port, samples))
     sampler.start()
 
     phase("reading simulation frames")
@@ -130,10 +148,10 @@ def one_stream(port, secs):
     if not ids:
         sys.exit("no simulation frames reached the client in %.0fs" % secs)
     refuse_gaps(ids, "")
-    print(
-        "frames=%d gaps=0 worst_now_ms=%d"
-        % (len(ids), int(worst[0] if worst else -1))
-    )
+    if len(samples) != SAMPLES:
+        fail("the sampler took %d of %d /now samples" % (len(samples), SAMPLES))
+    got = placement_summary(samples, "now")
+    print(" ".join(["frames=%d" % len(ids), "gaps=0"] + ["%s=%d" % kv for kv in got.items()]))
 
 
 def many_streams(port, secs, k):
