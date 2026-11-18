@@ -44,6 +44,11 @@ names the train after that release. The milestones are the live list.
   the contract, has a switch that turns it off, and is listed in the
   changelog under **Behaviour changes**, so it can be read before the
   upgrade.
+- A behaviour change that corrects the server, to what the application
+  declared or to what the specification it is written to requires
+  (ASGI, WSGI, an RFC), ships without a switch, since a switch would
+  only put the defect back. It is listed under **Behaviour changes** all
+  the same, and says there is no switch.
 - A line moved between stdout and stderr is a behaviour change whose
   switch is `2>&1`, which puts it back on the one stream a script reads.
 - A contract break waits for a major, and the minor before it
