@@ -146,6 +146,20 @@ default is listed under **Behaviour changes**
   `Development Status :: 5 - Production/Stable`** on PyPI, matching the
   1.x contract; it read `4 - Beta` since before 1.0.
 
+- **`poe smoke-sim-loop` gates on the second-worst of 32 samples** (SPEC
+  N15). Its off-the-loop arm required the WORST of 24 `/now` samples under
+  100 ms, and `Tests` run 43811357500 failed it at 113 ms on macOS, on a
+  change that did not touch the app. Over 45 runs every Ubuntu job read
+  0 ms and macOS a tail of 8 to 40 ms beside it; on an M4 the same tail
+  appears with the cores taken, step or no step. Both arms now read
+  `second_now_ms` through `probelib.placement_summary`, as `smoke-ramp`
+  and `smoke-host` do, and the probe takes 32 samples so the on-the-loop
+  arm, which needs two of them to land early in a step, misses about one
+  run in 14,000 (one in 850 at 24). That arm still fails the bound: its
+  second-worst was 152 to 198 ms in 20 runs of 20. Each line carries the
+  worst sample and where it spent its time, and CI records
+  `sim.off_loop_second_now_ms` against the limit and the worst without one.
+
 ### Fixed
 
 - **One malformed ASGI response head no longer stops a worker answering**

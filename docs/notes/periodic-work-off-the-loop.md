@@ -143,6 +143,33 @@ broken fan-out, by turning accept sharing off: in 1 of 3 macOS runs the bare
 race put all four streams on worker 0, the frame count passed, and only the
 worker count failed the phase. That run is why the worker count is there.
 
+### The gate reads the second-worst sample (2026-11-18)
+
+The off-the-loop arm required the worst of 24 `/now` samples under
+100 ms. `Tests` run 43811357500 failed it at 113 ms on macOS, on #689, a
+change to m0-wsgi that does not reach this app. Over the 45 `Tests` runs
+from 2026-11-06 to 2026-11-18, every Ubuntu job (40) read 0 ms; of 38
+macOS jobs, 30 read 0-4 ms and the rest 8, 10, 11, 11, 14, 15, 40 and 113.
+On an M4 under `mojo run`, 20 runs a shape: 0 ms in all 20 quiet; with
+eight spinning processes and the step, 1-12 ms; with nine and no step at
+all, 0-14 ms. The tail is the machine's, the same with the step or
+without it, so the arm was judging the runner's scheduling, as
+`smoke-ramp`'s and `smoke-host`'s placement arms did until 2026-10-01.
+
+So both arms read the second-worst sample now
+(`probelib.placement_summary`, which those gates print through), and the
+probe takes 32 samples rather than 24. The on-the-loop arm needs two
+samples to land in a step's first half, not one: at 24 it would miss
+about one run in 850, at 32 about one in 14,000, where the worst of 24
+missed about one in 10,000. At 32 samples on the M4, the on-the-loop
+arm's second-worst read 152-198 ms in 20 runs of 20, and the off arm's,
+under eight spinning processes, 0-4 ms. The on-the-loop arm is the
+regression the off arm exists for, the step run on the loop, so the off
+arm's bound fails it in all 20. CI records the second-worst against the
+limit (`sim.off_loop_second_now_ms`) and the worst with none
+(`sim.off_loop_now_ms`), so a runner that stalls more often shows in the
+numbers before it shows as a red run.
+
 ## Not built
 
 A framework helper — `Server.add_worker_thread(body, period)` or similar —

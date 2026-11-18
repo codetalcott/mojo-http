@@ -2491,8 +2491,10 @@ shell = """
 # separation is ~200x for a request that lands early in a step, but only a
 # request in a step's first half waits the 100ms threshold below -- 0.4 of
 # them -- so the on-loop arm's margin comes from the probe's sample count,
-# not from the threshold. It took three samples, and a phase lock with the
-# probe's fixed gap hid how few that was (scripts/sim_loop_probe.py).
+# not from the threshold. Both arms read the SECOND-worst of 32 samples: a
+# macOS runner stalls one sample in about a thousand for 80 to 190 ms, which
+# failed the off arm at 113 ms on a change that did not touch the app
+# (scripts/sim_loop_probe.py has the record and the arithmetic).
 # start ON_LOOP LOG [WORKERS]: every phase on a port of its own, in $port.
 start() {
   port=$(free_port)
@@ -2508,12 +2510,15 @@ start 0 sim_off.log
 off=$(python3 scripts/sim_loop_probe.py $port 4) || fail "off the loop: $off"
 frames=${off#frames=}
 frames=${frames%% *}
-worst=${off##*worst_now_ms=}
+worst=${off#*worst_now_ms=}
+worst=${worst%% *}
+second=${off#*second_now_ms=}
+second=${second%% *}
 [ "$frames" -ge 8 ] \
   || fail "off the loop: only $frames steps reached the client in 4s at 4Hz -- publishing with nothing draining is the quiet failure here"
-[ "$worst" -lt 100 ] \
-  || fail "off the loop: a trivial request waited ${worst}ms behind a 200ms step; the work is not off the loop"
-echo "off the loop: $frames steps, no gaps, worst /now ${worst}ms"
+[ "$second" -lt 100 ] \
+  || fail "off the loop: two trivial requests waited 100ms or more behind a 200ms step, the second-worst ${second}ms; the work is not off the loop ($off)"
+echo "off the loop: $frames steps, no gaps, second-worst /now ${second}ms ($off)"
 stop $pid
 
 # --- on the loop: the negative arm ---------------------------------------
@@ -2525,12 +2530,13 @@ start 1 sim_on.log
 on=$(python3 scripts/sim_loop_probe.py $port 4) || fail "on the loop: $on"
 frames_on=${on#frames=}
 frames_on=${frames_on%% *}
-worst_on=${on##*worst_now_ms=}
+second_on=${on#*second_now_ms=}
+second_on=${second_on%% *}
 [ "$frames_on" -ge 8 ] \
   || fail "on the loop: only $frames_on steps ran, so the arm measured nothing and the comparison above is vacuous"
-[ "$worst_on" -ge 100 ] \
-  || fail "on the loop: a trivial request took only ${worst_on}ms behind a 200ms tick -- this gate can no longer tell the two shapes apart"
-echo "ON the loop: $frames_on steps, worst /now ${worst_on}ms"
+[ "$second_on" -ge 100 ] \
+  || fail "on the loop: the second-worst trivial request took only ${second_on}ms behind a 200ms tick -- this gate can no longer tell the two shapes apart ($on)"
+echo "ON the loop: $frames_on steps, second-worst /now ${second_on}ms ($on)"
 stop $pid
 
 # --- SIGTERM with a step in flight ---------------------------------------
@@ -2572,7 +2578,8 @@ echo "two workers: $two"
 stop $pid
 
 echo "smoke-sim-loop OK"
-python3 scripts/emit.py sim.off_loop_now_ms "$worst" --unit ms --limit 100 --task smoke-sim-loop
+python3 scripts/emit.py sim.off_loop_second_now_ms "$second" --unit ms --limit 100 --task smoke-sim-loop
+python3 scripts/emit.py sim.off_loop_now_ms "$worst" --unit ms --task smoke-sim-loop
 python3 scripts/emit.py --covers N15 --task smoke-sim-loop
 """
 
