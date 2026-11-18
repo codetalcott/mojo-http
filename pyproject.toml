@@ -1935,10 +1935,14 @@ assert (s['max_connections'], s['stream_limit'], s['descriptor_limit']) == ($fit
 # A loop's handler pool reserves tens of bytes a slot, not a request and a
 # response (SPEC C26, #657): its job tables hold an entry per job in flight,
 # and a pool thread's handler sizes no stream tables. The probe reads idle
-# resident memory at two counts, fitted as the doctor reports them, with no
-# pool and with eight threads; the pool's share was 2380 B a slot (752 the
-# two tables, about 200 each thread's stream tables), and 28 after.
-python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --threads 8 --rounds 1 \
+# memory at two counts, fitted as the doctor reports them, with no pool and
+# with eight threads; the pool's share was 2380 B a slot (752 the two
+# tables, about 200 each thread's stream tables), and 28 after. Each cell
+# is its least reading of three starts: a pool thread's compile of the shim
+# can leave 3.6 MB resident in one start and not the next, which one round
+# on CI's macOS runner read as 432 B a slot. The selftest replays that run.
+python3 scripts/probes/pool_idle_rss.py --selftest || fail "the idle-memory probe's estimator"
+python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --threads 8 --rounds 3 \
   --max-pool-bytes-per-slot 128 --emit smoke-max-connections \
   || fail "the handler pool reserves more than 128 B a connection slot"
 # The asyncio executor's share (SPEC C27, #682): an ASGI application served
@@ -1947,7 +1951,7 @@ python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --threads 8 --rounds
 # chunks ride, and each slot's stream generation. It was 781 B a slot (the
 # executor thread's own handler's stream tables, and a request's method,
 # path and held 101 kept a slot rather than a job), and 241 after.
-python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --rounds 1 --no-realtime \
+python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --rounds 3 --no-realtime \
   --app bareapp.asgi:application --app-dir apps/asgi_bare \
   --versus-app hold_app:application --versus-app-dir scripts/smoke \
   --max-share-bytes-per-slot 360 --emit smoke-max-connections \
