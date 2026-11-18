@@ -194,7 +194,7 @@ shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I pa
 # Built as one program and run once per file, as `test-http` is (its
 # comment says why).
 [tool.poe.tasks.test-wsgi]
-help = "Test m0-wsgi (test_blocking_pool, test_read_head and test_hold_resume embed CPython; the rest need no interpreter)"
+help = "Test m0-wsgi (test_blocking_pool, test_bridge_build, test_read_head and test_hold_resume embed CPython; the rest need no interpreter)"
 shell = "python3 scripts/mojo_suite.py packages/m0-wsgi -I packages/m0-wsgi -I packages/m0-core -I packages/m0-http"
 
 # The executor shim's ownership rules, with no server and no Mojo. The shim
@@ -1938,9 +1938,10 @@ assert (s['max_connections'], s['stream_limit'], s['descriptor_limit']) == ($fit
 # memory at two counts, fitted as the doctor reports them, with no pool and
 # with eight threads; the pool's share was 2380 B a slot (752 the two
 # tables, about 200 each thread's stream tables), and 28 after. Each cell
-# is its least reading of three starts: a pool thread's compile of the shim
-# can leave 3.6 MB resident in one start and not the next, which one round
-# on CI's macOS runner read as 432 B a slot. The selftest replays that run.
+# is its least reading of three starts: until SPEC E44 a pool thread's
+# compile of the shim could leave 3.6 MB resident in one start and not the
+# next, which one round on CI's macOS runner read as 432 B a slot. The
+# selftest replays that run.
 python3 scripts/probes/pool_idle_rss.py --selftest || fail "the idle-memory probe's estimator"
 python3 scripts/probes/pool_idle_rss.py --counts 1024,16384 --threads 8 --rounds 3 \
   --max-pool-bytes-per-slot 128 --emit smoke-max-connections \

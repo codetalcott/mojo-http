@@ -36,7 +36,12 @@ process**, routed by longest prefix (on segment boundaries, so `/app` never
 swallows `/application`; the root mount is the empty prefix and needs no
 special case). Each mount detects its own protocol and gets its own bridge
 — free, because `PyBridge` already execs the shim into a fresh namespace
-dict per instance. The prefix reaches both protocols through
+dict per instance. **Every namespace execs `shim_code()`, never
+`SHIM_SOURCE`** (SPEC E44): the shim is compiled once per interpreter and
+each namespace loads a copy of its own: a parse per serving thread moved
+an idle server's memory in 3.6 MB steps from one start to the next, and
+one code object shared by eight namespaces cost the shim's `run` 4 to 5 %
+(`test_bridge_build.mojo` holds both). The prefix reaches both protocols through
 `PyBridge.set_base` and **only** there, because they disagree about it:
 WSGI gets `SCRIPT_NAME` with `PATH_INFO` trimmed to the remainder, ASGI
 gets `root_path` with `path` left whole (Django's `ASGIHandler` strips it
