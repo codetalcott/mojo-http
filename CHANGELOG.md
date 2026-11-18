@@ -105,6 +105,14 @@ default is listed under **Behaviour changes**
   application that builds its own `ServerConfig` from it reads it too
   ([Mojo host](docs/MOJO_HOST.md#configuration)).
 
+- **An ASGI application on the buffered path says why a WebSocket did
+  not open** (SPEC L35). Under `--blocking-threads` above 0 an ASGI
+  application has no `websocket` scope: an upgrade reaches it as a plain
+  GET, which a FastAPI or Starlette socket route answers 404, and
+  nothing said why. The first upgrade a handler thread sees now prints
+  one line on stderr naming the path, the setting and the way back to
+  the executor. What the client is answered has not changed.
+
 ### Changed
 
 - **m0serve compiles its Python shim once per process, where it compiled

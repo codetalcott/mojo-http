@@ -114,7 +114,11 @@ exists as an escape hatch and refuses a streaming response still unfinished
 after 10 s, since an infinite stream would hold a thread forever. It also answers only when the application returns, so a
 response there still waits for its background tasks, and an error the
 application answers and then re-raises (Starlette's error page) is replaced
-by the server's own 500.
+by the server's own 500. It has no `websocket` scope: an upgrade reaches
+the application as a plain GET, which a route that is a socket's alone
+answers 404, and the server prints one line a handler thread saying so.
+Sockets are served on the executor, which is the default and what
+`--blocking-threads 0` selects.
 
 **One limit, from the toolchain.** The executor is a Python type built
 in-process, and Mojo's Python bindings lay that type out for the

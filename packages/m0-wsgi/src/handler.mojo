@@ -192,6 +192,10 @@ struct WSGIHandler(ThreadHandler):
     opened from (`--ws-origin`, `M0_WS_ORIGIN`; `*` any), each through
     `normalize_ws_origin`. Every other origin is answered 403 before the
     upgrade (`ws_origin_allowed`, SPEC I48)."""
+    var ws_buffered_noticed: Bool
+    """Whether this handler has said that an ASGI application on the
+    buffered path was handed a WebSocket upgrade as a plain GET
+    (`_notice_buffered_socket`): once, as the origin notice is."""
     var ws_origin_noticed: Bool
     """Whether this handler has named the knob for a refused origin: once,
     because a page on another origin can be refused as often as it
@@ -419,6 +423,7 @@ struct WSGIHandler(ThreadHandler):
         self.thread_header = thread_header
         self.ws_origins = ws_origins^
         self.ws_origin_noticed = False
+        self.ws_buffered_noticed = False
         self.asgi_notify_fd = -1
         self.lane = -1
         self.ws_pool_fds = List[Int]()
@@ -983,6 +988,12 @@ struct WSGIHandler(ThreadHandler):
             return _unmounted()
 
         self.stream_app = which
+        if (
+            self.apps[which].is_asgi
+            and not self.ws_buffered_noticed
+            and req.headers.value_equals_ignore_case(HeaderKey.UPGRADE, "websocket")
+        ):
+            self._notice_buffered_socket(req.uri.path)
         if not self.realtime:
             return self.apps[which].serve(req)
 
@@ -1103,6 +1114,25 @@ struct WSGIHandler(ThreadHandler):
             " 403, its host not this request's (" + host + "); if that page"
             " is yours, add --ws-origin " + origin + " or M0_WS_ORIGIN, or"
             " '*' for any origin",
+            file=stderr,
+        )
+
+    def _notice_buffered_socket(mut self, path: String):
+        """Say, once per handler, why a WebSocket did not open: an ASGI
+        application reached through `func` is on the buffered path, which
+        builds an `http` scope for every request, an upgrade among them,
+        so the application answers the handshake as a plain GET, with its
+        404 where the route is a socket's alone. Nothing here refuses the
+        request: a path may serve both, and the application's answer is
+        the answer. The executor takes an upgrade before any handler does
+        (`dispatch_job`), so this never fires there (SPEC L35)."""
+        self.ws_buffered_noticed = True
+        print(
+            "m0serve: a WebSocket upgrade for " + path + " reached the"
+            " application as a plain GET: an ASGI application under"
+            " --blocking-threads (M0_BLOCKING_THREADS) above 0 is served on"
+            " the buffered path, which has no websocket scope; leave the"
+            " flag off, or set it to 0, to serve sockets on the executor",
             file=stderr,
         )
 
