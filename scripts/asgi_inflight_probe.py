@@ -153,9 +153,15 @@ def blocked():
     began = time.monotonic()
     socks[0].sendall(b"GET /block?ms=%d HTTP/1.1\r\nHost: probe\r\n\r\n" % BLOCK_MS)
     time.sleep(0.1)
+    # Half a millisecond apart by the clock, spun for rather than slept:
+    # `time.sleep(0.0005)` slept about 4 ms on the macOS CI runner, so the
+    # 2599 sends took 11.1 s and left nothing of the block to measure.
+    due = time.perf_counter()
     for s in socks[1:]:
         s.sendall(get_root)
-        time.sleep(0.0005)
+        due += 0.0005
+        while time.perf_counter() < due:
+            pass
     sent = time.monotonic()
     w0, w1 = sent + 0.2, began + BLOCK_MS / 1000.0 - 0.3
     if w1 - w0 < 1.0:
