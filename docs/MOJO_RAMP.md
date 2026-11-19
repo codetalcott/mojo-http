@@ -65,7 +65,9 @@ not do this build.
 Under `--realtime`, a Mojo view on a mount takes a Server-Sent Events hold
 with the same two response headers a Django view uses, `M0-Hold` and
 `M0-Channel`, and `m0pub.publish()` from Python reaches it. A streaming
-response that is not a hold is refused from a mount.
+response that is not a hold is refused from a mount. The Mojo host holds
+no connection for those headers: under `ViewsApp` the same view is
+answered 500, and a line on stderr names it.
 
 `--mount /rt=hold` is a built-in mount for the opposite split: the Python
 view signs a short-lived grant into the stream's URL, and the mount verifies

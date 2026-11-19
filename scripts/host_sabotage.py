@@ -53,7 +53,8 @@ tell, so it is not claimed as a guarded rule.
 
     uv run poe sabotage-host
     uv run poe sabotage-host --only "tick-owner"   one rule, by label substring
-    uv run poe sabotage-host --only unit           the thread rules alone
+    uv run poe sabotage-host --only unit           the test_host.mojo rules alone
+    uv run poe sabotage-host --only ramp           the refused hold's line (SPEC E45)
     uv run poe sabotage-host --only respawn        the supervisor's rule
     uv run poe sabotage-host --only views          the placement rule
     uv run poe sabotage-host --only threads        the loops-on-threads rules (SPEC E27-E29)
@@ -96,6 +97,7 @@ FLAGS = "flags"
 CMDLINE = "cmdline"
 CONFIG = "config"
 PARALLEL = "parallel"
+RAMP = "ramp"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
 LOOP_SHUTDOWN = Path("packages/m0-http/m0_server/loop/shutdown.mojo")
@@ -526,6 +528,34 @@ SABOTAGES = [
         "            self.refused += 1\n",
         "",
     ),
+    (
+        "a view's hold instruction goes to the client unread (SPEC E45)",
+        UNIT,
+        HOST,
+        "    if HOLD_HEADER in resp.headers:\n        print(hold_refused_line(req), file=stderr, flush=True)\n",
+        "    if False:\n        print(hold_refused_line(req), file=stderr, flush=True)\n",
+    ),
+    (
+        "a refused hold is not named on stderr (SPEC E45)",
+        RAMP,
+        HOST,
+        "        print(hold_refused_line(req), file=stderr, flush=True)\n",
+        "",
+    ),
+    (
+        "an on-loop view's hold instruction is not checked (SPEC E45)",
+        UNIT,
+        HOST,
+        "        var resp = answer.take()\n        _refuse_hold(req, resp)\n",
+        "        var resp = answer.take()\n",
+    ),
+    (
+        "a dispatched view's hold instruction is not checked (SPEC E45)",
+        UNIT,
+        HOST,
+        "        var resp = self.views.dispatch(req, self.state)\n        _refuse_hold(req, resp)\n",
+        "        var resp = self.views.dispatch(req, self.state)\n",
+    ),
     # --- the pre-fork pieces both hosts share, against test_prefork.mojo -----
     (
         "a spawned worker makes a new page instead of mapping its parent's",
@@ -752,6 +782,8 @@ GATES = {
     # max`); without them the baseline fails at the build, which the report
     # shows as a baseline failure, never as a catch.
     PARALLEL: _smoke("smoke-parallel-runtime", timeout=900),
+    # SPEC E45 on the wire: the ramp module's hold route on the host's lane.
+    RAMP: _smoke("smoke-ramp"),
     UNIT: _unit("test_host.mojo"),
     PREFORK: _unit("test_prefork.mojo"),
     VIEWS: _unit("test_views.mojo"),
