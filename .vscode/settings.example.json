@@ -9,7 +9,7 @@
   // Each package root holds the compiled `<pkg>.mojoc` that `from m0_*.…`
   // imports resolve against, so run `uv run poe build-all` after changing a
   // package's sources or the LSP will report stale or unknown symbols.
-  // `packages/m0-http` doubles as the root for the vendored `lightbug_http`
+  // `packages/m0-http` doubles as the root for the vendored `m0_server`
   // source tree.
   //
   // If every prelude type (`String`, `List`, …) reports "unable to locate

@@ -21,10 +21,10 @@ passes them either way.
 
 from std.testing import TestSuite, assert_equal, assert_true
 
-from lightbug_http.c.epoll_backend import _timer_slot
-from lightbug_http.c.kqueue import EVFILT_TIMER
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.loop.state import (
+from m0_server.c.epoll_backend import _timer_slot
+from m0_server.c.kqueue import EVFILT_TIMER
+from m0_server.c.platform import PlatformBackend
+from m0_server.loop.state import (
     TIMER_APP_TICK, TIMER_BODY, TIMER_IDLE, TIMER_SSE_FLUSH, TIMER_SSE_HEARTBEAT,
 )
 

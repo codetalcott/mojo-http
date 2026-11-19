@@ -20,7 +20,7 @@ from std.time import perf_counter_ns
 
 from max.algorithm import parallelize
 
-from lightbug_http import HTTPResponse
+from m0_server import HTTPResponse
 from m0_http import reply
 
 

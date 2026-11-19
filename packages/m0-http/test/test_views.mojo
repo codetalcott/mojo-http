@@ -5,10 +5,10 @@ SPEC section N is the framework layer's; N2 is this file's row.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.header import HeaderKey, parse_request_headers
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI
+from m0_server.header import HeaderKey, parse_request_headers
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.io.bytes import Bytes
+from m0_server.uri import URI
 
 from src import reply
 from src.router import Mount

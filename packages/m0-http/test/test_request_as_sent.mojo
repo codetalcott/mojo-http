@@ -19,7 +19,7 @@ every HTTP/1.0 request, `connection_close()` reads the protocol itself
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.header import (
+from m0_server.header import (
     HeaderKey,
     KH_CONNECTION,
     KH_CONTENT_LENGTH,
@@ -27,10 +27,10 @@ from lightbug_http.header import (
     KH_TRANSFER_ENCODING,
     parse_request_headers,
 )
-from lightbug_http.header import Headers
-from lightbug_http.http import HTTPRequest, URITooLongError, split_server_address
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI
+from m0_server.header import Headers
+from m0_server.http import HTTPRequest, URITooLongError, split_server_address
+from m0_server.io.bytes import Bytes
+from m0_server.uri import URI
 
 
 def request_from(

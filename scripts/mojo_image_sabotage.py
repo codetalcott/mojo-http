@@ -48,7 +48,7 @@ DOCKERFILE = Path("deploy/mojo/Dockerfile")
 ABOUT = Path("apps/blobs/about.mojo")
 SERVER = Path("apps/blobs/server.mojo")
 HOST = Path("packages/m0-http/m0_host/host.mojo")
-LOOP_SHUTDOWN = Path("packages/m0-http/lightbug_http/loop/shutdown.mojo")
+LOOP_SHUTDOWN = Path("packages/m0-http/m0_server/loop/shutdown.mojo")
 
 # What `.dockerignore` lets into the context, copied for a source sabotage.
 CONTEXT = [

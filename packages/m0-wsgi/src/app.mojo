@@ -9,7 +9,7 @@ what was resolved so the entry point can pick defaults and print it.
 
 from std.python import Python, PythonObject
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 
 from .bridge import PyBridge, shim_code
 from .cli import discovery_specs, parse_app_spec

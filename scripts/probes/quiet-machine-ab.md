@@ -31,7 +31,7 @@ uv run --no-sync mojo build -I packages/m0-http -I packages/m0-core \
   apps/pool_spike/server.mojo -o bin/pool_spike-A
 ```
 
-Each B is one edit to `packages/m0-http/lightbug_http/offload.mojo`:
+Each B is one edit to `packages/m0-http/m0_server/offload.mojo`:
 
 - **LF24**: `comptime _WAKE_LANE_STRIDE = 64` and
   `comptime _THREAD_STRIDE = 64` become 128 (`_WAKE_MAX_LANES` falls from
@@ -51,7 +51,7 @@ uv run --no-sync poe build-serve
 cp bin/m0serve bin/m0serve-$B
 uv run --no-sync mojo build -I packages/m0-http -I packages/m0-core \
   apps/pool_spike/server.mojo -o bin/pool_spike-$B
-git checkout -- packages/m0-http/lightbug_http/offload.mojo
+git checkout -- packages/m0-http/m0_server/offload.mojo
 ```
 
 and rebuild `bin/m0serve` from the clean file (`poe build-serve`) when both

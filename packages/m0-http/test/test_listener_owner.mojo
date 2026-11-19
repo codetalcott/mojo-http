@@ -33,21 +33,21 @@ from std.sys.info import CompilationTarget
 from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.address import NetworkType
-from lightbug_http.c.fcntl import F_DUPFD_CLOEXEC, F_GETFD, _fcntl
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.c.pipe import ShutdownHandle, close_fd, create_shutdown_pipe
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.process import (
+from m0_server import HTTPRequest, HTTPResponse, OK
+from m0_server.address import NetworkType
+from m0_server.c.fcntl import F_DUPFD_CLOEXEC, F_GETFD, _fcntl
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.c.pipe import ShutdownHandle, close_fd, create_shutdown_pipe
+from m0_server.c.platform import PlatformBackend
+from m0_server.c.process import (
     SIG_DFL, SIGINT, SIGTERM, _raw_signal, getpid, kill_process,
 )
-from lightbug_http.connection import ListenConfig, TCPConnection
+from m0_server.connection import ListenConfig, TCPConnection
 from test.loopback import create_connection
-from lightbug_http.event_loop import run_event_loop
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.server import Server
-from lightbug_http.server_config import ServerConfig
+from m0_server.event_loop import run_event_loop
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.server import Server
+from m0_server.server_config import ServerConfig
 from m0_host.host import AppHandler, HostContext, serve
 from m0_http.config import AppConfig
 

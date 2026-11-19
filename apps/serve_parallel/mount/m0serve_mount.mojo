@@ -16,7 +16,7 @@ refuse a forked worker (`--workers N`, `--reload`) and to accept a spawned
 one (`--spawn-workers`), which execs and starts the runtime fresh.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_http import Mount, PoolContext, PoolHandler, Views
 
 from host_parallel.compute import timed

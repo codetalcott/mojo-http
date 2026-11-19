@@ -22,25 +22,25 @@ that pass is below the batch: no new connection is admitted (the last test).
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
-from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.broadcast import encode_bus_frame
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.c.kqueue import (
+from m0_server import HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server.broadcast import encode_bus_frame
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.c.kqueue import (
     EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.socket import recv, send
-from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ConnectionState, ListenConfig
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.platform import MSG_DONTWAIT
+from m0_server.c.socket import recv, send
+from m0_server.c.socketpair import socketpair_dgram
+from m0_server.connection import ConnectionState, ListenConfig
 from test.loopback import create_connection
-from lightbug_http.event_loop import run_pass_once
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.accept import _admit_connection
-from lightbug_http.loop.shutdown import _run_shutdown
-from lightbug_http.loop.state import LoopState, TIMER_APP_TICK, UNUSED, _close_slot
-from lightbug_http.offload import OffloadPool
-from lightbug_http.server_config import ServerConfig
+from m0_server.event_loop import run_pass_once
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.loop.accept import _admit_connection
+from m0_server.loop.shutdown import _run_shutdown
+from m0_server.loop.state import LoopState, TIMER_APP_TICK, UNUSED, _close_slot
+from m0_server.offload import OffloadPool
+from m0_server.server_config import ServerConfig
 
 from std.ffi import c_int, external_call
 from test.support import _stream_pair

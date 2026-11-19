@@ -13,10 +13,10 @@ from std.python import Python
 from std.testing import TestSuite, assert_equal, assert_true
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.http import HTTPResponse, OK
-from lightbug_http.http.request import HTTPRequest
-from lightbug_http.offload import OffloadPool
-from lightbug_http.uri import URI
+from m0_server.http import HTTPResponse, OK
+from m0_server.http.request import HTTPRequest
+from m0_server.offload import OffloadPool
+from m0_server.uri import URI
 
 from src.blocking_pool import BlockingPool
 from src.thread_handler import ThreadContext, ThreadHandler

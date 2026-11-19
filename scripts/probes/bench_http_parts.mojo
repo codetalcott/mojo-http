@@ -31,14 +31,14 @@ row is the ceiling on what any user-space change can buy.
 
 from std.time import perf_counter_ns
 
-from lightbug_http.header import (
+from m0_server.header import (
     HeaderKey,
     ParsedRequestHeaders,
     find_header_end,
     parse_request_headers,
 )
-from lightbug_http.http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.io.bytes import Bytes
+from m0_server.http import HTTPRequest, HTTPResponse, OK
+from m0_server.io.bytes import Bytes
 
 from src.router import Router
 

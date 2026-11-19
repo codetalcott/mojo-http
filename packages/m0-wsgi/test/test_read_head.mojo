@@ -15,7 +15,7 @@ it lets through.
 from std.python import Python
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.hold import HOLD_NONE, take_hold
+from m0_server.hold import HOLD_NONE, take_hold
 
 from src.bridge import PyBridge
 from src.response import build_asgi_response, build_response

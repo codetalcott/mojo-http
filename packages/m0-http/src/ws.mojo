@@ -1,6 +1,6 @@
 """WSHub — the handler-side registry for WebSocket connections.
 
-The event loop owns the protocol (`lightbug_http/websocket.mojo` parses
+The event loop owns the protocol (`m0_server/websocket.mojo` parses
 frames, answers pings, closes violators); what a handler still has to
 manage is *who is connected and what they should be sent*. `WSHub` is that
 bookkeeping, shaped like `DatastarStream` so the wiring reads the same:
@@ -25,7 +25,7 @@ Parallel `List` fields rather than a `List[Struct]` — the SoA pattern this
 repo uses for cheap per-field scans.
 """
 
-from lightbug_http.broadcast import BroadcastBus, publish_to_channels
+from m0_server.broadcast import BroadcastBus, publish_to_channels
 
 from .multiworker import shared_fetch_add
 from .sse import MAX_PENDING_BYTES

@@ -11,14 +11,14 @@ from std.ffi import c_int, external_call
 from std.os import makedirs
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.io.bytes import Bytes
+from m0_server.io.bytes import Bytes
 
-from lightbug_http.c.process import getpid
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.uri import URI
+from m0_server.c.process import getpid
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.uri import URI
 
 from src.static import StaticFiles, content_type_for, parse_range, ByteRange, RANGE_NONE, RANGE_VALID, RANGE_UNSATISFIABLE, static_headers, svg_policy_for, SVG_SANDBOX_POLICY
-from lightbug_http.header import Header, Headers
+from m0_server.header import Header, Headers
 from test.support import _raw
 
 

@@ -39,25 +39,25 @@ from std.ffi import c_int, external_call
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
-from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.accept_share import (
+from m0_server import HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server.accept_share import (
     AcceptShare, HandoffPost, accept_share_slots, ACCEPT_SHARE_BUSY_NS,
     ACCEPT_SHARE_FIRST_WORKER_SLOT, ACCEPT_SHARE_WORKER_STRIDE, STATE_LEFT,
     STATE_PARKED,
 )
-from lightbug_http.c.fdpass import RECV_FD_EMPTY, send_fd
-from lightbug_http.c.kqueue import EVFILT_READ
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.socket import recv, send
-from lightbug_http.event_loop import run_pass_once
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.accept import _admit_connection, _admit_handoffs
-from lightbug_http.loop.shutdown import (
+from m0_server.c.fdpass import RECV_FD_EMPTY, send_fd
+from m0_server.c.kqueue import EVFILT_READ
+from m0_server.c.pipe import close_fd
+from m0_server.c.platform import MSG_DONTWAIT
+from m0_server.c.socket import recv, send
+from m0_server.event_loop import run_pass_once
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.loop.accept import _admit_connection, _admit_handoffs
+from m0_server.loop.shutdown import (
     _shutdown_begin, _shutdown_drain_step, _shutdown_finish,
 )
-from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
-from lightbug_http.server_config import ServerConfig
+from m0_server.loop.state import LoopState, UNUSED, _close_slot
+from m0_server.server_config import ServerConfig
 
 from src.multiworker import SharedAtomics
 from test.support import _stream_pair

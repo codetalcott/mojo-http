@@ -22,12 +22,12 @@ wants `DatastarStream`.
 Run it:  uv run poe serve-chat        (M0_WORKERS=2 for the fan-out shape)
 """
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK, NotFound
-from lightbug_http.broadcast import BroadcastBus
-from lightbug_http.c.process import getpid
-from lightbug_http.connection import ListenConfig
-from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.websocket import websocket_upgrade, encode_ws_frame, WS_OP_TEXT
+from m0_server import Server, HTTPService, HTTPRequest, HTTPResponse, OK, NotFound
+from m0_server.broadcast import BroadcastBus
+from m0_server.c.process import getpid
+from m0_server.connection import ListenConfig
+from m0_server.header import Headers, Header, HeaderKey
+from m0_server.websocket import websocket_upgrade, encode_ws_frame, WS_OP_TEXT
 
 from m0_http import (
     AppConfig, WorkerSupervisor, WSHub, install_shutdown_signals, exit_worker,

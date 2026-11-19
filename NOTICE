@@ -20,7 +20,7 @@ Releases up to and including v1.8.0 also attached a libm0core bundle
 not; libm0core ships inside the wheel only (docs/DECISIONS.md D56).
 
 A reader who downloaded one of those should read its notice, not this one:
-pointing at `packages/m0-http/lightbug_http/` is only meaningful in a source
+pointing at `packages/m0-http/m0_server/` is only meaningful in a source
 checkout.
 
 --------------------------------------------------------------------------------
@@ -104,10 +104,10 @@ Mojo runtime libraries (redistributed in every macOS binary artifact)
 
 --------------------------------------------------------------------------------
 
-lightbug_http
-    Path        packages/m0-http/lightbug_http/
+lightbug_http, as the package m0_server
+    Path        packages/m0-http/m0_server/
     Upstream    https://github.com/Lightbug-HQ/lightbug_http
-    License     MIT — packages/m0-http/lightbug_http/LICENSE
+    License     MIT — packages/m0-http/m0_server/LICENSE
     Copyright   (c) 2023 Valentin Erokhin
 
     REDISTRIBUTED IN BINARY FORM since the m0serve bundle and the PyPI
@@ -982,7 +982,7 @@ lightbug_http
         in the same order. The file went from 4,576 lines to 3,686.
 
       - event_loop.mojo, loop/ (2026-09-28): the event loop is split into
-        modules, the package `lightbug_http.loop` (review record C3):
+        modules, the package `m0_server.loop` (review record C3):
         `state` (`LoopState`, the constants the modules share, and the
         per-slot transitions, `_close_slot` among them), `timers`,
         `accept`, `request`, `response`, `streams`, `offload` (the loop's
@@ -1896,7 +1896,7 @@ lightbug_http
         code removed, each name searched for across the repository, the
         `m0` templates and the one application outside it, then the fork
         compiled whole: the package's re-exports of `URI`, `Cookie`,
-        `RequestCookieJar` and `ResponseCookieJar`, and `lightbug_http.io`'s
+        `RequestCookieJar` and `ResponseCookieJar`, and `m0_server.io`'s
         of `Bytes` and `Duration`; `io/sync.mojo`'s `Duration`, whose one
         use was `HTTPRequest.timeout`, a field the constructor wrote and
         nothing read, removed with its argument; and `prepare_loop`'s
@@ -2013,7 +2013,7 @@ lightbug_http
 
       - offload_wire.mojo (new), offload.mojo, broadcast.mojo (2026-10-09):
         the offload channels' wire is a module of its own,
-        `lightbug_http.offload_wire`: the datagram tags, values and sizes
+        `m0_server.offload_wire`: the datagram tags, values and sizes
         (`TAG_STREAM_ABORT`, `TAG_JOB_BATCH`, `TAG_WS_MESSAGE`, `_POISON`,
         `_POKE`, the batch bounds), the little-endian codec (`append_i64_le`,
         `read_i64_le`, `append_i32_le`, `read_i32_le`, `encode_ack`,
@@ -2165,9 +2165,15 @@ lightbug_http
         `job_entries`, so a receiver can keep state of its own per job in
         flight in tables of the pool's entries (SPEC C27, the asyncio
         executor's method, path and held 101).
+      - the package (2026-11-19): renamed `m0_server`, from
+        `lightbug_http`, the directory and the import name both, so that
+        the fork no longer claims the name of the upstream package, which
+        is still published (docs/DECISIONS.md D70). No code changed with
+        the name. The directory's LICENSE is upstream's, unchanged.
 
     For the modification history carried into this repository:
-        git log --no-merges -- packages/m0-http/lightbug_http
+        git log --no-merges -- packages/m0-http/lightbug_http \
+            packages/m0-http/m0_server
 
     The 28 earlier commits predating 2026-03-18 were made in the private
     mojo-siren-grail repository and are not reachable from this history. The

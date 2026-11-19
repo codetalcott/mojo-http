@@ -13,7 +13,7 @@ hold the escapes, the scheme and the userinfo.
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.uri import URI, authority_end, userinfo_separator
+from m0_server.uri import URI, authority_end, userinfo_separator
 
 
 def _refused(url: String) -> Bool:

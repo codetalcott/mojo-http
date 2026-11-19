@@ -37,7 +37,7 @@ Rules that apply to all three, all learned the hard way in this repo:
   paths outside the worktree — put helper scripts in the ignored `bin/`
   and run them plainly. Build inside the worktree (`uv sync` first).
 - **A `src/` edit is invisible to `bin/m0serve` until `build-http` +
-  `build-wsgi` + `build-serve`**; a `lightbug_http/` edit needs only
+  `build-wsgi` + `build-serve`**; a `m0_server/` edit needs only
   `build-serve`. A green `mojo run` over `src` is not a compile of the
   package.
 - **Finish each PR with the CI-shaped run**: `test-all` teed into
@@ -51,7 +51,7 @@ Rules that apply to all three, all learned the hard way in this repo:
 
 ## 1. Retire `OwningList`
 
-**Why.** `packages/m0-http/lightbug_http/utils/owning_list.mojo` is a
+**Why.** `packages/m0-http/m0_server/utils/owning_list.mojo` is a
 ~400-line copy of `List` written when `List[T]` needed `Copyable`
 elements. On the pinned toolchain `List` and `Optional` take a
 Movable-only, non-`Copyable` struct (proved by probe during the audit:
@@ -218,13 +218,13 @@ bodies are never instantiated. Confirm before deleting, by the repo's
 own method: make each body invalid (a bare `undefined_name` line) and run
 `build-all` + `test-all`; if both stay green the body is dead.
 
-- `memmove[...]` in `packages/m0-http/lightbug_http/io/bytes.mojo:316`
+- `memmove[...]` in `packages/m0-http/m0_server/io/bytes.mojo:316`
   (uses `init_pointee_copy` at 346 and 351). The audit found **no
   callers** in `packages/` or `apps/`. Delete the whole function if the
   invalidation test agrees.
-- `sendto[...]` in `packages/m0-http/lightbug_http/c/socket.mojo:1407`
+- `sendto[...]` in `packages/m0-http/m0_server/c/socket.mojo:1407`
   (`as_immutable()` at 1448). This one HAS a caller —
-  `Socket.send_to` at `lightbug_http/socket.mojo:652` — so it is the
+  `Socket.send_to` at `m0_server/socket.mojo:652` — so it is the
   caller that is uninstantiated, not the callee. Decide by the same test
   whether `send_to` is dead too (a UDP path this HTTP server never takes);
   if it is, delete both and the `sendto` error types in

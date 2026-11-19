@@ -32,9 +32,9 @@ unconditional: at one worker the stream simply has no peer to send to.
 Run it:  uv run poe serve-counter        (M0_WORKERS=2 for the fan-out shape)
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.c.process import getpid
-from lightbug_http.header import Headers, Header, HeaderKey
+from m0_server import HTTPRequest, HTTPResponse, OK
+from m0_server.c.process import getpid
+from m0_server.header import Headers, Header, HeaderKey
 from m0_host.host import AppHandler, HostContext, serve
 from m0_host.flags import host_config
 

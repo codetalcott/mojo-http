@@ -18,9 +18,9 @@ for real.
 from std.ffi import c_int, c_size_t, c_uchar, external_call, get_errno
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.c.sendfile import SendFileResult, send_file
-from lightbug_http.c.socket import close, recv
-from lightbug_http.io.bytes import Bytes
+from m0_server.c.sendfile import SendFileResult, send_file
+from m0_server.c.socket import close, recv
+from m0_server.io.bytes import Bytes
 
 
 comptime _AF_UNIX = 1

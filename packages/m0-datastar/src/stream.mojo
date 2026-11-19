@@ -1,7 +1,7 @@
 """Datastar SSE fan-out: owns subscriptions, formats frames, queues them.
 
 `consts.mojo` and `sse.mojo` are pure wire format with no dependencies. This
-module is where the dependency on `m0_http` and `lightbug_http` lands, so an
+module is where the dependency on `m0_http` and `m0_server` lands, so an
 application that only wants to generate Datastar frames never pays for it.
 
 Why this cannot go through `SSERegistry.notify`: the builders in `sse.mojo`
@@ -13,11 +13,11 @@ disagree on field order, since the Datastar SDK spec mandates `event:` before
 uses `notify_frame`, which queues bytes verbatim.
 """
 
-# Top-level package, not the `lightbug_http.http` subpackage — see the note in
+# Top-level package, not the `m0_server.http` subpackage — see the note in
 # signals.mojo. Everything needed is re-exported here anyway.
-from lightbug_http import Headers, Header, HeaderKey, HTTPRequest, HTTPResponse
-from lightbug_http.broadcast import BroadcastBus, publish_to_channels
-from lightbug_http.hold import request_last_event_id
+from m0_server import Headers, Header, HeaderKey, HTTPRequest, HTTPResponse
+from m0_server.broadcast import BroadcastBus, publish_to_channels
+from m0_server.hold import request_last_event_id
 
 from m0_http import NO_EVENT_ID, SSERegistry, accepts_zstd, sse_response
 from m0_http.multiworker import shared_fetch_add, shared_load, shared_store

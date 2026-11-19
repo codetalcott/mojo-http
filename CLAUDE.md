@@ -47,7 +47,7 @@ private monorepo ([PROVENANCE.md](PROVENANCE.md)).
 ```
 m0-core     (zero deps)   hashing, JSON escape, JSON parse, crypto
 └── m0-http               router, negotiation, ETag, SSE, CORS, views, sessions
-    └── lightbug_http     the forked HTTP server (lives inside m0-http)
+    └── m0_server         the forked HTTP server (lives inside m0-http)
 m0-datastar               Datastar wire format (zero deps) + server glue (m0-http)
 m0-wsgi                   WSGI/ASGI gateway — embeds CPython, layers on m0-http
 m0-sqlite   (zero deps)   SQLite bindings — a SIBLING, never nested
@@ -67,8 +67,8 @@ constraint is the direction, and that no libpython reaches the link line.
   Python import in `m0-http` or `m0-core` puts libpython on every build's
   link line. **Read [packages/m0-wsgi/AGENTS.md](packages/m0-wsgi/AGENTS.md)
   before editing m0-wsgi, the shim or `m0serve.mojo`, and before editing the
-  pool and executor seams outside it** — `lightbug_http/offload.mojo`, `lightbug_http/offload_wire.mojo`,
-  `lightbug_http/ring.mojo`, `lightbug_http/loop/offload.mojo` and
+  pool and executor seams outside it** — `m0_server/offload.mojo`, `m0_server/offload_wire.mojo`,
+  `m0_server/ring.mojo`, `m0_server/loop/offload.mojo` and
   `m0_http.mojo_pool` — whose directories do not load it. Its costliest rules:
   - The bridge's per-request path is the raw C API: `PyDict_SetItem` does
     not steal, so every string built for it is `Py_DecRef`'d after the
@@ -105,8 +105,8 @@ constraint is the direction, and that no libpython reaches the link line.
   [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md).
 
 **One import cycle, on purpose (DECISIONS D33).** `src/` imports
-`lightbug_http` throughout (`cors`, `signal`, `multiworker` …), and
-ONE fork module imports back: `lightbug_http/loop/state.mojo` imports
+`m0_server` throughout (`cors`, `signal`, `multiworker` …), and
+ONE fork module imports back: `m0_server/loop/state.mojo` imports
 `m0_http.log`; both sides are inside `packages/m0-http/`. **Nothing in
 `src/` may reach the event loop — `event_loop.mojo` or any module of `loop/`
 — at any depth**: `m0_http.log` resolves through the `m0_http.mojoc` that
@@ -124,7 +124,7 @@ check-mojoc-trait` guards the fix, and `build-apps` compiling
 
 - **`mojo_pool.mojo` is `m0_http.mojo_pool`**, in `src/`: `MojoPool`,
   `PoolContext`, `PoolHandler` and `JOIN_TIMEOUT_NS` import from `m0_http`,
-  and `lightbug_http` does not export them. An edit reaches apps after
+  and `m0_server` does not export them. An edit reaches apps after
   `build-http`, and `bin/m0serve` after `build-http`, `build-wsgi` and
   `build-serve`; its own test imports `src.mojo_pool`.
   `scripts/pool_sabotage.py` anchors exact source lines (the
@@ -160,7 +160,7 @@ Python-only projects it serves; there is no `server.mojo` in them.
 `M0-Channel`, `m0pub.publish()`, inbound WebSocket messages as a POST) is
 [QUICKSTART.md](QUICKSTART.md), which `poe smoke-quickstart` executes, then
 `docs/QUICKSTART_NEXT.md`, against the tree's own wheel: editing either can
-break CI. The seam is the fork's `lightbug_http/hold.mojo`. **A hold that
+break CI. The seam is the fork's `m0_server/hold.mojo`. **A hold that
 reconnects with `Last-Event-ID` is caught up by `WSGIHandler._resume`** from
 the loop's `ReplayJournal` (`--replay-frames`, SPEC I33, D65;
 docs/notes/a-hold-that-replays.md) — one site, reached by the inline
@@ -204,9 +204,12 @@ publishes to PyPI.
 
 ## The lightbug fork
 
-`packages/m0-http/lightbug_http/` is a **hard fork**, not a vendored
-snapshot: upstream was archived 2026-05-12, so changes there are ordinary
-changes to this repo, with nothing to rebase onto.
+`packages/m0-http/m0_server/` is a **hard fork** of lightbug_http, not a
+vendored snapshot: upstream was archived 2026-05-12, so changes there are
+ordinary changes to this repo, with nothing to rebase onto. It was
+`lightbug_http` until 2026-11-19 (DECISIONS D70), and the changelog, the
+notes and the records keep that name where it was the name: search
+history for both.
 
 - Keep it isolated from framework code. Do not refactor it to match
   framework style.
@@ -242,7 +245,7 @@ changes to this repo, with nothing to rebase onto.
   `test-all`.** `build-http` precompiles `src` only and Mojo checks method
   bodies lazily, so a body no app instantiates is never type-checked (ten
   errors collected that way). It throws its artifact away; apps still
-  resolve `lightbug_http` from source.
+  resolve `m0_server` from source.
 
 ## Commands
 
@@ -484,13 +487,13 @@ resolve through the `.mojoc`, so a change to `m0-core` is invisible to
 `m0-http` until `build-core` runs. A `.mojoc` does not bundle its
 dependencies: a consumer passes every `-I` in the chain, and apps add
 `-I apps/` for their sibling modules (`datastar_counter.page`).
-`apps/hello/server.mojo` imports only `lightbug_http` yet needs
+`apps/hello/server.mojo` imports only `m0_server` yet needs
 `-I packages/m0-core`: `event_loop.mojo` → `loop/state.mojo` → `m0_http.log`
 → `m0_core.json_escape`.
 
 ## The handler contract
 
-`HTTPService` (`lightbug_http/service.mojo`) has sixteen methods, and **only
+`HTTPService` (`m0_server/service.mojo`) has sixteen methods, and **only
 `func` is required**: the other fifteen carry default bodies, so a handler
 declares just the hooks it uses.
 
@@ -816,7 +819,7 @@ Properties of the design, not defects to fix in passing. Each names its note.
   one-shot on both backends, so the firing handler re-arms FIRST — on epoll,
   skipping it is a level-triggered event storm.
 - **Under `--workers N` the worker that wins an accept gives the connection
-  away** (`lightbug_http/accept_share.mojo`, SPEC E16;
+  away** (`m0_server/accept_share.mojo`, SPEC E16;
   docs/notes/accept-sharing.md, which holds the shared page's layout and
   `pick`'s rules): the socket goes to the least-loaded sibling
   (`active + pending`) over its `AF_UNIX` channel with `SCM_RIGHTS`

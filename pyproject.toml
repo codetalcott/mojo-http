@@ -95,7 +95,7 @@ help = "Build m0-core package"
 shell = "cd packages/m0-core && mojo precompile src -o m0_core.mojoc"
 
 [tool.poe.tasks.build-http]
-help = "Build m0-http package (includes the lightbug_http fork)"
+help = "Build m0-http package (includes the m0_server fork)"
 shell = "cd packages/m0-http && mojo precompile src -I ../m0-core/ -o m0_http.mojoc"
 
 # `build-http` precompiles `src` only, and Mojo checks method bodies lazily,
@@ -105,15 +105,15 @@ shell = "cd packages/m0-http && mojo precompile src -I ../m0-core/ -o m0_http.mo
 # call sites, a `socklen_t`, an origin mismatch in a dead helper, and four
 # hand-written copy/move dunders the compiler now derives. The artifact is
 # thrown away: this asks whether the fork COMPILES, and changes nothing about
-# how an app resolves `lightbug_http` (still from source).
+# how an app resolves `m0_server` (still from source).
 [tool.poe.tasks.check-fork-package]
 help = "The lightbug fork type-checks as a whole package, lazy bodies included"
 deps = ["build-http"]
 shell = """
 set -e
-out="${TMPDIR:-/tmp}/lightbug_http_typecheck.mojoc"
+out="${TMPDIR:-/tmp}/m0_server_typecheck.mojoc"
 cd packages/m0-http
-mojo precompile lightbug_http -I ../m0-core -I . -o "$out"
+mojo precompile m0_server -I ../m0-core -I . -o "$out"
 rm -f "$out"
 """
 
@@ -1272,7 +1272,7 @@ sequence = ["test-shim", "test-wheel-shim", "check-phase-stamps", "fork-lint", "
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
-# apps/hello imports only lightbug_http, but lightbug_http/loop/state.mojo
+# apps/hello imports only m0_server, but m0_server/loop/state.mojo
 # imports m0_http.log, which was built against m0-core — so both -I paths are
 # required even though server.mojo names neither.
 

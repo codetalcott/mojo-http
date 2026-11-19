@@ -11,8 +11,8 @@ without a `WSGIApp` is the handler's frame dispatch and the pump itself;
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.broadcast import decode_bus_frame
-from lightbug_http.offload import (
+from m0_server.broadcast import decode_bus_frame
+from m0_server.offload import (
     make_stream_ack_pair, drain_ack_fd, encode_ack, ACK_DISCONNECT,
 )
 

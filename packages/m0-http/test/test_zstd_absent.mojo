@@ -2,7 +2,7 @@
 uncompressed (docs/notes/compressing-a-stream.md, step 3).
 
 A file of its own because libzstd, once opened, is the process's for good
-(`lightbug_http/c/zstd.mojo`): this process names a library that is not
+(`m0_server/c/zstd.mojo`): this process names a library that is not
 there before anything opens one.
 """
 
@@ -10,13 +10,13 @@ from std.ffi import c_int
 from std.os import setenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http import HTTPRequest, HTTPResponse, HTTPService, OK
-from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.socket import close, recv
-from lightbug_http.connection import ConnectionState
-from lightbug_http.loop.response import _finish_response
-from lightbug_http.loop.state import LoopState
-from lightbug_http.server_config import ServerConfig
+from m0_server import HTTPRequest, HTTPResponse, HTTPService, OK
+from m0_server.c.platform import MSG_DONTWAIT, PlatformBackend
+from m0_server.c.socket import close, recv
+from m0_server.connection import ConnectionState
+from m0_server.loop.response import _finish_response
+from m0_server.loop.state import LoopState
+from m0_server.server_config import ServerConfig
 from test.support import _stream_pair
 
 

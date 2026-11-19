@@ -19,9 +19,9 @@ each pool thread by `make(ctx)`, answers `func`, and is told `shutdown`.
 Everything else in this module is the demo's own business.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_http import PoolContext, PoolHandler
-from lightbug_http.header import Header, Headers
+from m0_server.header import Header, Headers
 from m0_http import Html, Mount, Views, reply
 from std.memory.alloc import unsafe_alloc
 

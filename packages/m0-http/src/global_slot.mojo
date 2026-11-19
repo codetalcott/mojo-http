@@ -54,7 +54,7 @@ stdlib import. Both are deliberate, and both are covered by tests in
 
 from std.collections.string.string_span import _get_kgen_string
 
-from lightbug_http.c.process import getpid
+from m0_server.c.process import getpid
 
 
 comptime MAX_TRACKED_CHILDREN = 64

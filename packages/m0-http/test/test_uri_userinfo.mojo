@@ -16,10 +16,10 @@ same bug's `://` half.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.header import parse_request_headers
-from lightbug_http.http import HTTPRequest, split_server_address
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI, userinfo_separator
+from m0_server.header import parse_request_headers
+from m0_server.http import HTTPRequest, split_server_address
+from m0_server.io.bytes import Bytes
+from m0_server.uri import URI, userinfo_separator
 
 
 def request_from(raw: String, server_addr: String) raises -> HTTPRequest:

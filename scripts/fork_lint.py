@@ -23,7 +23,7 @@
    symbol; DYNAMIC_ALLOWED lists exceptions (none).
 
 2. A `[byte=` slice, however spaced or split across lines, in the fork
-   (`packages/m0-http/lightbug_http/`) and in `packages/m0-http/src/`. It
+   (`packages/m0-http/m0_server/`) and in `packages/m0-http/src/`. It
    asserts a codepoint boundary at both ends, a trap rather than an error
    on a request's non-UTF-8 bytes (SPEC G14). ALLOWED_BYTE_SLICES lists the
    sites that are safe, each keyed by file and a snippet of the line (never
@@ -56,8 +56,8 @@ VARIADIC = frozenset([
 # variadic symbol -> the files (relative to ROOT) that may call it, each in
 # `_fcntl`'s shape (Darwin: dummies fill x0-x7, the variadic argument last).
 SANCTIONED = {
-    "fcntl": ["packages/m0-http/lightbug_http/c/fcntl.mojo"],
-    "shm_open": ["packages/m0-http/lightbug_http/c/process.mojo"],
+    "fcntl": ["packages/m0-http/m0_server/c/fcntl.mojo"],
+    "shm_open": ["packages/m0-http/m0_server/c/process.mojo"],
 }
 
 # Variadic symbols called on Linux only, where a variadic integer or pointer
@@ -65,13 +65,13 @@ SANCTIONED = {
 # Darwin dummies are needed. Their files carry the argument for it, and the
 # call is never compiled on Darwin: `epoll_pwait2_ns` documents `syscall`.
 SANCTIONED_LINUX_ONLY = {
-    "syscall": ["packages/m0-http/lightbug_http/c/epoll.mojo"],
+    "syscall": ["packages/m0-http/m0_server/c/epoll.mojo"],
 }
 
 # The file whose docstring names every sanctioned symbol.
-DOC_FILE = "packages/m0-http/lightbug_http/c/fcntl.mojo"
+DOC_FILE = "packages/m0-http/m0_server/c/fcntl.mojo"
 
-FORK = ("packages/m0-http/lightbug_http/", "packages/m0-http/src/")
+FORK = ("packages/m0-http/m0_server/", "packages/m0-http/src/")
 
 # (file, snippet of the code line) -> why that string cannot hold request
 # bytes. The fork holds none; src/ keeps the sites below.
@@ -277,11 +277,11 @@ def selftest():
         '        "shm_open", c_int, Int, c_int, c_int\n'
         '    ](0, 1, 2)\n'
     )
-    f = check_variadic("packages/m0-http/lightbug_http/c/socket.mojo", fixed_shm)
+    f = check_variadic("packages/m0-http/m0_server/c/socket.mojo", fixed_shm)
     expect("fixed-argument shm_open outside its wrapper", f, True)
     expect("... and it names the line", f and ":2:" in f[0], True)
     expect("shm_open in its sanctioned file",
-           check_variadic("packages/m0-http/lightbug_http/c/process.mojo", fixed_shm), False)
+           check_variadic("packages/m0-http/m0_server/c/process.mojo", fixed_shm), False)
     expect("fcntl in the wrong file",
            check_variadic("apps/x/a.mojo", 'external_call["fcntl", c_int, c_int, c_int]()'), True)
     expect("open in an app",
@@ -289,9 +289,9 @@ def selftest():
     expect("ioctl in a test",
            check_variadic("packages/m0-http/test/t.mojo", 'external_call["ioctl", c_int]()'), True)
     expect("syscall in its Linux-only file",
-           check_variadic("packages/m0-http/lightbug_http/c/epoll.mojo", 'external_call["syscall", Int]()'), False)
+           check_variadic("packages/m0-http/m0_server/c/epoll.mojo", 'external_call["syscall", Int]()'), False)
     expect("syscall elsewhere",
-           check_variadic("packages/m0-http/lightbug_http/c/socket.mojo", 'external_call["syscall", Int]()'), True)
+           check_variadic("packages/m0-http/m0_server/c/socket.mojo", 'external_call["syscall", Int]()'), True)
     for name, call in [
         ("single-quoted", "external_call['shm_open', c_int]()"),
         ("triple-quoted", 'external_call["""shm_open""", c_int]()'),
@@ -324,7 +324,7 @@ def selftest():
            check_variadic("apps/x/a.mojo", 'external_call["opendir", c_int]()'), False)
 
     bad = 'def g(target: String):\n    return String(target[byte=1:3])\n'
-    f, _ = check_byte_slices("packages/m0-http/lightbug_http/uri.mojo", bad, {})
+    f, _ = check_byte_slices("packages/m0-http/m0_server/uri.mojo", bad, {})
     expect("a [byte= slice of a request string", f, True)
     expect("... and it names the line", f and ":2:" in f[0], True)
     expect("a slice in a comment",

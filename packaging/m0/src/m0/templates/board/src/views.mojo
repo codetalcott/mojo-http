@@ -12,7 +12,7 @@ that they read and write that same instance: under `--blocking-threads N`
 the host builds a state for every pool thread too.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_host.host import HostContext, ViewState
 
 from m0_datastar.stream import DatastarStream

@@ -14,8 +14,8 @@ sizes and what a slot with no job reads.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.http import OK
-from lightbug_http.offload import OFFLOAD_MAX_INFLIGHT, OffloadPool
+from m0_server.http import OK
+from m0_server.offload import OFFLOAD_MAX_INFLIGHT, OffloadPool
 
 from src.asgi_executor import ExecutorState, _held_101, _job_method, _job_path
 

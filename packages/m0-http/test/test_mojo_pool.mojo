@@ -11,14 +11,14 @@ from std.os import setenv
 from std.testing import TestSuite, assert_equal, assert_true
 from std.time import perf_counter_ns
 
-from lightbug_http.broadcast import decode_bus_frame
-from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.socket import recv
-from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.header import Header, Headers
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.offload import OffloadPool
-from lightbug_http.uri import URI
+from m0_server.broadcast import decode_bus_frame
+from m0_server.c.platform import MSG_DONTWAIT
+from m0_server.c.socket import recv
+from m0_server.c.socketpair import socketpair_dgram
+from m0_server.header import Header, Headers
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.offload import OffloadPool
+from m0_server.uri import URI
 
 from src.mojo_pool import MojoPool, PoolContext, PoolHandler
 from src.reply import json

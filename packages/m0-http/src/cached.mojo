@@ -31,8 +31,8 @@ That view writes -- it fills the cache -- so it registers with
 `add_write`, on a state each thread builds for itself.
 """
 
-from lightbug_http.header import HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from m0_server.header import HeaderKey
+from m0_server.http import HTTPRequest, HTTPResponse
 
 from m0_core.hashing import wyhash64
 

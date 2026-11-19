@@ -51,7 +51,7 @@ TARGET = REPO / "packages" / "m0-wsgi" / "src" / "shim_source.mojo"
 # integer literal on a line of its own, so the check reads them without
 # evaluating anything.
 MIRRORED = [
-    ("_WS_DATAGRAM_MAX", "packages/m0-http/lightbug_http/offload.mojo",
+    ("_WS_DATAGRAM_MAX", "packages/m0-http/m0_server/offload.mojo",
      "WS_DATAGRAM_MAX"),
     ("_WS_TAG_HEADER", "packages/m0-wsgi/src/handler.mojo", "WS_TAG_HEADER"),
     ("_WS_IN_WINDOW", "packages/m0-wsgi/src/handler.mojo", "WS_IN_WINDOW"),

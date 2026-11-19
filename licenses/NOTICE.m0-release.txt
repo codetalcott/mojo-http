@@ -12,7 +12,8 @@ the terms below.
 mojo-http and lightbug_http — compiled into the binary
 
 The binary was compiled from the mojo-http framework's source, which the m0
-wheel carries, and that source includes a hard fork of lightbug_http.
+wheel carries, and that source includes m0_server, a hard fork of
+lightbug_http.
 
     mojo-http      Copyright (c) 2025-2026 Wm Talcott
                    MIT License; see LICENSE.mojo-http.txt

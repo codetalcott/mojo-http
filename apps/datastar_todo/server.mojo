@@ -57,8 +57,8 @@ Run it:  uv run poe serve-todo
 from std.os import getenv
 from std.time import sleep
 
-from lightbug_http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.header import Headers, Header, HeaderKey
+from m0_server import HTTPRequest, HTTPResponse, OK
+from m0_server.header import Headers, Header, HeaderKey
 from m0_host.host import AppHandler, HostContext, serve
 from m0_host.flags import host_config
 

@@ -12,8 +12,8 @@ unchanged, and the one thing a thread additionally needs — "build yourself,
 here, now" — is stated where only threads can see it.
 """
 
-from lightbug_http import HTTPService
-from lightbug_http.offload import OffloadPool
+from m0_server import HTTPService
+from m0_server.offload import OffloadPool
 
 
 trait ThreadHandler(HTTPService, Movable, Deinitable):

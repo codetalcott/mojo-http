@@ -23,7 +23,7 @@ server and asserts it answers.
 from std.ffi import c_int, external_call
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.c.process import getpid, kill_process, SIGTERM, SIGINT
+from m0_server.c.process import getpid, kill_process, SIGTERM, SIGINT
 
 from src.signal import (
     create_shutdown_pipe, install_shutdown_signals, shutdown_signals_active,

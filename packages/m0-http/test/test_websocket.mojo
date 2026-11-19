@@ -9,10 +9,10 @@ the pong that answers its ping, the close code a violation earns.
 from std.base64 import b64encode
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.uri import URI
-from lightbug_http.websocket import (
+from m0_server.header import Headers, Header, HeaderKey
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.uri import URI
+from m0_server.websocket import (
     sha1,
     unmask_payload,
     compute_accept_key,

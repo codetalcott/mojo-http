@@ -15,7 +15,7 @@ from std.os import setenv, unsetenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.broadcast import BUS_MAX_FRAME, BroadcastBus, drain_bus_channel
+from m0_server.broadcast import BUS_MAX_FRAME, BroadcastBus, drain_bus_channel
 from m0_host.host import (
     AppHandler,
     HostContext,
@@ -28,10 +28,10 @@ from m0_host.host import (
     ViewsApp,
     host_refusal,
 )
-from lightbug_http.http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.uri import URI
-from lightbug_http.offload import OffloadPool
-from lightbug_http.ring import atomic_at
+from m0_server.http import HTTPRequest, HTTPResponse, OK
+from m0_server.uri import URI
+from m0_server.offload import OffloadPool
+from m0_server.ring import atomic_at
 from m0_http.config import AppConfig
 from m0_http.mojo_pool import MojoPool, PoolContext
 from m0_http.views import Views

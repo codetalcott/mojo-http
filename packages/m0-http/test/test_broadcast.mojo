@@ -9,7 +9,7 @@ surviving into children — is proven by the multi-worker phase of
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.broadcast import (
+from m0_server.broadcast import (
     BroadcastBus, BUS_MAX_FRAME, BUS_DATAGRAM_MAX, MAX_CHANNEL, _BUS_HEADER,
     CHANNEL_CONTROL_BYTE, BusReader,
     channel_is_reserved,
@@ -19,18 +19,18 @@ from lightbug_http.broadcast import (
 from std.ffi import c_int
 from std.sys.info import CompilationTarget
 
-from lightbug_http.c.fcntl import (
+from m0_server.c.fcntl import (
     F_GETFL, F_SETFL, _fcntl, is_nonblocking, set_nonblocking,
 )
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.socket import send
-from lightbug_http.http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.loop.state import LoopState
-from lightbug_http.loop.streams import _deliver_bus_frames
-from lightbug_http.server_config import ServerConfig
-from lightbug_http.service import HTTPService
-from lightbug_http.c.socketpair import socketpair_dgram
+from m0_server.c.pipe import close_fd
+from m0_server.c.platform import MSG_DONTWAIT
+from m0_server.c.socket import send
+from m0_server.http import HTTPRequest, HTTPResponse, OK
+from m0_server.loop.state import LoopState
+from m0_server.loop.streams import _deliver_bus_frames
+from m0_server.server_config import ServerConfig
+from m0_server.service import HTTPService
+from m0_server.c.socketpair import socketpair_dgram
 
 from src.multiworker import SharedAtomics, shared_fetch_add, shared_load, shared_store
 

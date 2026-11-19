@@ -6,9 +6,9 @@ The loop's half, the context every byte after the head goes through, is
 """
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
-from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.http import HTTPRequest
-from lightbug_http.uri import URI
+from m0_server.header import Header, Headers, HeaderKey
+from m0_server.http import HTTPRequest
+from m0_server.uri import URI
 from src.sse.response import accepts_zstd, sse_response, zstd_acceptable
 
 

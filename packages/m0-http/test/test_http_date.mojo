@@ -12,7 +12,7 @@ from std.ffi import external_call
 from std.memory.alloc import unsafe_alloc
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.http.date import http_date_from_unix, http_date_now, unix_now
+from m0_server.http.date import http_date_from_unix, http_date_now, unix_now
 
 from src.threads import (
     ThreadSet,

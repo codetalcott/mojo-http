@@ -328,8 +328,8 @@ TREE = {
     "packages/m0-core/src/json.mojo": "def escape(): pass\n",
     "packages/m0-http/m0_http.mojoc": "http artifact\n",
     "packages/m0-http/src/router.mojo": "def route(): pass\n",
-    "packages/m0-http/lightbug_http/__init__.mojo": "\n",
-    "packages/m0-http/lightbug_http/server.mojo": "struct Server: pass\n",
+    "packages/m0-http/m0_server/__init__.mojo": "\n",
+    "packages/m0-http/m0_server/server.mojo": "struct Server: pass\n",
     "packages/m0-http/m0_host/host.mojo": "def serve(): pass\n",
     "packages/m0-http/test/test_router.mojo": "def test(): pass\n",
     "packages/m0-postgres/m0_postgres.mojoc": "postgres artifact\n",
@@ -480,10 +480,10 @@ def scenarios(t: Stand):
         yield f"m0_{pkg}.mojoc", (lambda p=pkg: t.edit(f"packages/m0-{p}/m0_{p}.mojoc")), \
             f"sources under packages/m0-{pkg} changed"
     yield "a fork module (source-resolved)", \
-        lambda: t.edit("packages/m0-http/lightbug_http/server.mojo"), \
+        lambda: t.edit("packages/m0-http/m0_server/server.mojo"), \
         "sources under packages/m0-http changed"
     yield "a new fork module", \
-        lambda: (t.tmp / "packages/m0-http/lightbug_http/extra.mojo").write_text("\n"), \
+        lambda: (t.tmp / "packages/m0-http/m0_server/extra.mojo").write_text("\n"), \
         "sources under packages/m0-http changed"
     yield "m0_host (source-resolved)", lambda: t.edit("packages/m0-http/m0_host/host.mojo"), \
         "sources under packages/m0-http changed"
@@ -545,7 +545,7 @@ def exercise(t: Stand) -> list[str]:
     # the call after it builds.
     for label, knob in (("a failed compile", "STUB_MOJO_FAIL"),
                         ("a failed relocation", "STUB_RELOCATE_FAIL")):
-        t.edit("packages/m0-http/lightbug_http/server.mojo")
+        t.edit("packages/m0-http/m0_server/server.mojo")
         rc, out, _ = t.run(**{knob: "1"})
         if rc == 0:
             return [f"{label}: build-serve exited 0: {_tail(out)}"]
@@ -556,9 +556,9 @@ def exercise(t: Stand) -> list[str]:
 
     # A source edited while the compiler runs is built again: the stamp
     # holds what the check read, not what the tree says after the build.
-    t.edit("packages/m0-http/lightbug_http/server.mojo")
+    t.edit("packages/m0-http/m0_server/server.mojo")
     problem = (built("an edit before a build", "sources under packages/m0-http changed",
-                     STUB_EDIT_DURING_BUILD=str(t.tmp / "packages/m0-http/lightbug_http/server.mojo"))
+                     STUB_EDIT_DURING_BUILD=str(t.tmp / "packages/m0-http/m0_server/server.mojo"))
                or built("an edit made while the compiler ran",
                         "sources under packages/m0-http changed")
                or skipped("an edit made while the compiler ran"))

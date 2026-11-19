@@ -18,8 +18,8 @@ Talk to it from a browser console:
     ws.onopen = () => ws.send("hello")
 """
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK, NotFound
-from lightbug_http.websocket import websocket_upgrade, encode_ws_frame
+from m0_server import Server, HTTPService, HTTPRequest, HTTPResponse, OK, NotFound
+from m0_server.websocket import websocket_upgrade, encode_ws_frame
 
 from m0_http import AppConfig, install_shutdown_signals
 

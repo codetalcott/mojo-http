@@ -52,7 +52,7 @@ from src.cli import (
 )
 from src.checks import CheckFacts, first_refusal, flag_checks
 from m0_http.config import AppConfig
-from lightbug_http.server_config import ServerConfig
+from m0_server.server_config import ServerConfig
 
 
 def _seed() -> ServeOptions:

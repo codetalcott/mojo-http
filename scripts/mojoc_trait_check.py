@@ -63,8 +63,8 @@ _SIBLING = Path(sys.executable).with_name("mojo")
 MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
 MISMATCH = """
-from lightbug_http.uri import URI
-from lightbug_http.http import HTTPRequest
+from m0_server.uri import URI
+from m0_server.http import HTTPRequest
 
 from m0_http import PageShell, page_or_fragment
 

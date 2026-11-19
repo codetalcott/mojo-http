@@ -42,7 +42,7 @@ out of the blob, so a test can reverse every route in a table and insist
 the result matches — the property that keeps the two directions honest.
 """
 
-from lightbug_http.strings import next_list_member
+from m0_server.strings import next_list_member
 
 comptime _SLASH = UInt8(47)  # '/'
 comptime _COLON = UInt8(58)  # ':'

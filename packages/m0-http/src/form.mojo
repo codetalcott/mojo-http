@@ -18,7 +18,7 @@ check cannot be forgotten: a view that answers 400 on None gets that
 status for a JSON POST even when every field it reads has a default.
 
 **Deliberately not factored out of `URI.parse`.** The query loop at
-`lightbug_http/uri.mojo` looks identical and means something different: it
+`m0_server/uri.mojo` looks identical and means something different: it
 fills `Dict[String, String]`, last-wins, because `req.uri.queries` has a
 long-standing contract; this preserves repeats. A single shared loop would
 force one of the two to change, and routing the query through two lists
@@ -33,10 +33,10 @@ disposition model and a spill-to-disk policy; the app that uploads a file
 is what would justify it).
 """
 
-from lightbug_http.header import HeaderKey, ascii_lower_byte
-from lightbug_http.http import HTTPRequest
-from lightbug_http.strings import trim_ows
-from lightbug_http.uri import QueryDelimiters, unquote
+from m0_server.header import HeaderKey, ascii_lower_byte
+from m0_server.http import HTTPRequest
+from m0_server.strings import trim_ows
+from m0_server.uri import QueryDelimiters, unquote
 
 from .reply import body_string
 

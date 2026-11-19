@@ -5,7 +5,7 @@ Run with `uv run poe test-apps`.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.broadcast import BUS_MAX_FRAME
+from m0_server.broadcast import BUS_MAX_FRAME
 
 from blobs.kernel import NVERT, SLOTS, Shapes, Tracer
 from blobs.wire import fits_the_bus, polygon, signals_json, state_frame

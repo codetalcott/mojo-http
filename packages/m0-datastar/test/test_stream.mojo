@@ -8,10 +8,10 @@ from std.testing import (
     TestSuite,
 )
 
-from lightbug_http.broadcast import BroadcastBus, drain_bus_channel
-from lightbug_http.http import HTTPRequest
-from lightbug_http.uri import URI
-from lightbug_http.io.bytes import Bytes
+from m0_server.broadcast import BroadcastBus, drain_bus_channel
+from m0_server.http import HTTPRequest
+from m0_server.uri import URI
+from m0_server.io.bytes import Bytes
 
 from m0_http.multiworker import SharedAtomics
 
@@ -227,7 +227,7 @@ def test_reconnect_replays_missed_frames() raises:
 
 def test_a_reconnect_reads_its_id_as_the_held_streams_do() raises:
     """`open` reads `Last-Event-ID` with the fork's one parser,
-    `request_last_event_id` (lightbug_http.hold), which every held stream
+    `request_last_event_id` (m0_server.hold), which every held stream
     uses: an id with whitespace around it resumes where it says, a value
     that is not a plain decimal of at most 18 digits replays the whole
     journal, and the two parsers cannot drift. The package had a copy of

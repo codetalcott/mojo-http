@@ -89,8 +89,8 @@ answer, SVGs included, in place of this one.
 
 from std.os import stat
 
-from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.header import Headers, Header, HeaderKey, name_is
+from m0_server import HTTPRequest, HTTPResponse
+from m0_server.header import Headers, Header, HeaderKey, name_is
 
 from .threads import dup_fd
 

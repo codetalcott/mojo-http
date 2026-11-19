@@ -9,7 +9,7 @@ libpython on the link line of every Mojo app in the repo. Everything else --
 dealing the threads over the lanes, registering them, the pills and the bounded
 join -- is `PoolThreads` below, which `blocking_pool` imports; it was a second
 copy there until 2026-09-28, `stop_and_join` byte for byte.
-`lightbug_http.offload` was written for exactly this split — its docstring says
+`m0_server.offload` was written for exactly this split — its docstring says
 it "knows nothing about Python or about handlers" — so what is left here is the
 thread body.
 
@@ -41,7 +41,7 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
   pool thread CAN begin is an `M0-Hold: stream`, because a hold has no
   producer of its own: the loop drains it from its registries and the bus
   feeds it. A handler returns the same two instruction headers a Django
-  view returns (`lightbug_http/hold.mojo`), and this thread does what a
+  view returns (`m0_server/hold.mojo`), and this thread does what a
   WSGI pool thread does with them — rewrites the response into the
   stream's head, sends the loop an `h` frame on the loop's own bus channel
   BEFORE completing (the frame is what subscribes the slot, in the
@@ -65,14 +65,14 @@ Rules, inherited from the WSGI pool and load-bearing for the same reasons:
 from std.time import perf_counter_ns, sleep
 from std.sys import stderr
 
-from lightbug_http.offload import (
+from m0_server.offload import (
     OffloadPool, JOB_WS_MESSAGE, JOB_STOP, ns_left, stop_deadline,
 )
-from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
-from lightbug_http.http.common_response import InternalError
-from lightbug_http.service import HTTPService
-from lightbug_http.hold import take_stream_hold, request_last_event_id, send_hold_frame
-from lightbug_http.c.process import getpid
+from m0_server.http import HTTPResponse, Headers, Header, HeaderKey
+from m0_server.http.common_response import InternalError
+from m0_server.service import HTTPService
+from m0_server.hold import take_stream_hold, request_last_event_id, send_hold_frame
+from m0_server.c.process import getpid
 
 # This file lived in the fork until 2026-09-18, because on Mojo 1.0 an app's
 # conformance to `PoolHandler` behind the `.mojoc` got no witness table. The

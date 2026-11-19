@@ -28,10 +28,10 @@ from pathlib import Path
 
 from sabotage_lib import MojoRun, Ran, rule, run
 
-HEADER = Path("packages/m0-http/lightbug_http/header.mojo")
-PARSING = Path("packages/m0-http/lightbug_http/http/parsing.mojo")
-FRAMING = Path("packages/m0-http/lightbug_http/framing.mojo")
-CHUNKED = Path("packages/m0-http/lightbug_http/http/chunked.mojo")
+HEADER = Path("packages/m0-http/m0_server/header.mojo")
+PARSING = Path("packages/m0-http/m0_server/http/parsing.mojo")
+FRAMING = Path("packages/m0-http/m0_server/framing.mojo")
+CHUNKED = Path("packages/m0-http/m0_server/http/chunked.mojo")
 FUZZER = Path("scripts/fuzz_request.mojo")
 
 # Fewer iterations than a real run: a broken invariant shows up in the first

@@ -14,7 +14,7 @@ and a change there wants tests that name it.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.uri import URI, scheme_separator
+from m0_server.uri import URI, scheme_separator
 
 
 def test_a_real_scheme_is_found() raises:

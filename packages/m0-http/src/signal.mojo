@@ -54,8 +54,8 @@ than not having one. `shutdown_signals_active()` reports which happened, and
 
 from std.ffi import c_int
 
-from lightbug_http.c.pipe import create_shutdown_pipe, ShutdownHandle, close_fd
-from lightbug_http.c.process import (
+from m0_server.c.pipe import create_shutdown_pipe, ShutdownHandle, close_fd
+from m0_server.c.process import (
     install_signal_handler, SIGTERM, SIGINT,
 )
 

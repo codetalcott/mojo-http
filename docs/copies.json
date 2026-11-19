@@ -48,7 +48,7 @@
    "page": "README.md",
    "opens": "To **write an application in Mojo** (preview), the `m0` package writes the",
    "rows": {
-    "N23": "cf4e9b75c75a"
+    "N23": "51f9e0caa75a"
    }
   },
   {
@@ -190,7 +190,7 @@
    "page": "docs/MOJO.md",
    "opens": "The `m0` package on PyPI carries the framework's source",
    "rows": {
-    "N23": "cf4e9b75c75a",
+    "N23": "51f9e0caa75a",
     "N41": "ff31fc05c598"
    }
   },
@@ -348,7 +348,7 @@
    "page": "docs/MOJO.md",
    "opens": "where the framework's source is installed",
    "rows": {
-    "N23": "cf4e9b75c75a"
+    "N23": "51f9e0caa75a"
    }
   },
   {
@@ -422,7 +422,7 @@
    "page": "llms.txt",
    "opens": "Preview. A second package, `m0`, for writing the application itself in",
    "rows": {
-    "N23": "cf4e9b75c75a"
+    "N23": "51f9e0caa75a"
    }
   },
   {
@@ -648,7 +648,7 @@
    "page": "packaging/m0/README.md",
    "opens": "This wheel carries the framework's **source** and a small CLI",
    "rows": {
-    "N23": "cf4e9b75c75a",
+    "N23": "51f9e0caa75a",
     "N25": "a0e9cbedf8ff"
    }
   },
@@ -672,7 +672,7 @@
    "page": "packaging/m0/README.md",
    "opens": "`m0` is versioned apart from the repository it is cut from",
    "rows": {
-    "N23": "cf4e9b75c75a",
+    "N23": "51f9e0caa75a",
     "N32": "1ae5f6d4e4dc"
    }
   },

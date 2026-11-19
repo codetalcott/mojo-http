@@ -32,12 +32,12 @@ from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.address import NetworkType, TCPAddr
-from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.c.network import SocketAddress
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.socket import (
+from m0_server.address import NetworkType, TCPAddr
+from m0_server.c.fcntl import F_GETFD, _fcntl
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.c.network import SocketAddress
+from m0_server.c.pipe import close_fd
+from m0_server.c.socket import (
     SOL_SOCKET,
     ShutdownOption,
     SocketOption,
@@ -48,10 +48,10 @@ from lightbug_http.c.socket import (
     shutdown,
     socket,
 )
-from lightbug_http.c.socket_error import SysError
-from lightbug_http.connection import ListenConfig, TCPConnection
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.socket import DescriptorClose, Socket
+from m0_server.c.socket_error import SysError
+from m0_server.connection import ListenConfig, TCPConnection
+from m0_server.io.bytes import Bytes
+from m0_server.socket import DescriptorClose, Socket
 
 
 comptime Adopted = Socket[TCPAddr[NetworkType.tcp4]]

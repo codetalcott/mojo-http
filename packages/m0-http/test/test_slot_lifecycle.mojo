@@ -32,26 +32,26 @@ from std.os import getenv, remove, setenv, unsetenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import perf_counter_ns
 
-from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.c.kqueue import (
+from m0_server import HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server.c.kqueue import (
     EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE,
 )
-from lightbug_http.c.fcntl import dup_cloexec
-from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.process import getpid, ignore_sigpipe
-from lightbug_http.c.socket import (
+from m0_server.c.fcntl import dup_cloexec
+from m0_server.c.platform import MSG_DONTWAIT, PlatformBackend
+from m0_server.c.process import getpid, ignore_sigpipe
+from m0_server.c.socket import (
     SOL_SOCKET, SocketOption, close, recv, send, setsockopt,
 )
-from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ConnectionState
-from lightbug_http.loop.accept import _admit_connection
-from lightbug_http.loop.request import _on_read
-from lightbug_http.loop.response import _on_write
-from lightbug_http.loop.streams import _read_websocket
-from lightbug_http.websocket import (
+from m0_server.c.socketpair import socketpair_dgram
+from m0_server.connection import ConnectionState
+from m0_server.loop.accept import _admit_connection
+from m0_server.loop.request import _on_read
+from m0_server.loop.response import _on_write
+from m0_server.loop.streams import _read_websocket
+from m0_server.websocket import (
     WS_OP_CLOSE, WS_OP_PING, WS_OP_TEXT, close_frame, encode_ws_frame_masked,
 )
-from lightbug_http.loop.state import (
+from m0_server.loop.state import (
     FLUSH_AFTER_SEND,
     LoopState,
     RECLAIM_HEAD_FLOOR_NS,
@@ -75,18 +75,18 @@ from lightbug_http.loop.state import (
     _stream_idle,
     _ws_linger,
 )
-from lightbug_http.loop.state import _chunked_stream_ends, _close_slot, _farewell_streams
-from lightbug_http.c.zstd import ZstdCompressor, ZstdDecompressor
-from lightbug_http.websocket import WS_CLOSE_GOING_AWAY
-from lightbug_http.c.socket import ShutdownOption, shutdown
-from lightbug_http.loop.response import _finish_response, _owe_interim
-from lightbug_http.loop.streams import _drain_outboxes
-from lightbug_http.offload import OffloadPool, make_stream_ack_pair
-from lightbug_http.loop.timers import _on_timer
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.server_config import ServerConfig
-from lightbug_http.uri import URI
+from m0_server.loop.state import _chunked_stream_ends, _close_slot, _farewell_streams
+from m0_server.c.zstd import ZstdCompressor, ZstdDecompressor
+from m0_server.websocket import WS_CLOSE_GOING_AWAY
+from m0_server.c.socket import ShutdownOption, shutdown
+from m0_server.loop.response import _finish_response, _owe_interim
+from m0_server.loop.streams import _drain_outboxes
+from m0_server.offload import OffloadPool, make_stream_ack_pair
+from m0_server.loop.timers import _on_timer
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.io.bytes import Bytes
+from m0_server.server_config import ServerConfig
+from m0_server.uri import URI
 from test.support import _run_parked, _stream_pair
 
 

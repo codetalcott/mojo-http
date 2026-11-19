@@ -92,7 +92,7 @@ names do not belong in the zero-dependency package `build-ffi` compiles
 into `libm0core`.
 """
 
-from lightbug_http.strings import is_token_char
+from m0_server.strings import is_token_char
 from m0_core.html_escape import escape_html_into
 from m0_core.json_escape import escape_json_string
 
