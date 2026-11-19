@@ -48,7 +48,7 @@ comparator wins, the row stays.
 | question | answer |
 | --- | --- |
 | Fastest on bare WSGI? | **A tie** — one worker and one handler thread each, Granian to m0serve is ~<!-- num:granian-per-m0@2 -->0.98<!-- /num -->x per core and <!-- num:granian-vs-m0-rps@2 -->1.00<!-- /num -->x in requests per second, inside the spread between recordings, which have put each of the two a few percent ahead in turn. <!-- observed: bench/results/linux-2026-11/layer-split-linux-20261106T023949Z.json; bench/results/asgi-per-core-2026-10/layer-split-linode-unpinned-20261006T193017Z.json -->On Linux m0serve leads this row: 1.11x Granian in requests per second in the aarch64 container at 1.17.0, and 1.04x on rented x86-64 hardware on 2026-10-06 |
-| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.34<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core against uvloop, about level on this box**: <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x, the second thread buying throughput rather than efficiency. <!-- observed: notes/asgi-per-core.md, artifacts in bench/results/asgi-per-core-2026-10/ -->On Linux the default is a little behind per core, 0.91x in a container and 0.94x on rented x86-64 hardware, and the one-thread loop (`M0_INVERTED=1`) is the per-core answer: 1.31x uvloop on this box, 1.42x in the container and 1.27x on the rented box, at 16 connections, where it also serves more than the default on Linux and less on this box. Against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.43<!-- /num -->x everywhere measured |
+| Fastest on bare ASGI? | **In requests per second, yes**: <!-- num:asgi-vs-uvloop@2 -->1.63<!-- /num -->x uvicorn with uvloop (what `pip install uvicorn[standard]` runs) and <!-- num:asgi-vs-uvicorn@2 -->2.28<!-- /num -->x `uvicorn --loop asyncio` at 16 connections, the executor's two threads using <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn has one. **Per core against uvloop, about level on this box**: <!-- num:asgi-per-core-vs-uvloop@2 -->0.98<!-- /num -->x, the second thread buying throughput rather than efficiency. <!-- observed: notes/asgi-per-core.md, artifacts in bench/results/asgi-per-core-2026-10/ -->On Linux the default is a little behind per core, 0.91x in a container and 0.94x on rented x86-64 hardware, and the one-thread loop (`M0_INVERTED=1`) is the per-core answer: 1.31x uvloop on this box, 1.42x in the container and 1.27x on the rented box, at 16 connections, where it also serves more than the default on Linux and less on this box. Against `--loop asyncio` the executor leads per core by ~<!-- num:asgi-per-core-vs-uvicorn@2 -->1.37<!-- /num -->x everywhere measured |
 | Fastest fast-request tail under mixed load? | **Yes** against `uvicorn --loop asyncio`: p99 ahead in every recorded run. uvloop is not in this bench. |
 
 ## The HTTP layer, and the bridge
@@ -112,14 +112,14 @@ a server that runs no Python to one that does. The row prices the bridge.
 asserted between the two responses, single process each:
 
 <!-- generated: asgi-wrk-hello -- edit bench/results, not this table -->
-Source: [`asgi-wrk-hello-20261023T052543Z.json`](../bench/results/asgi-wrk-hello-20261023T052543Z.json) — 2026-10-23T05:25:43+00:00, commit `d207a9ef`.
-Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; wrk -t2 -c16 -d8s, browser headers; executor loop: uvloop.
+Source: [`asgi-wrk-hello-20261119T074508Z.json`](../bench/results/asgi-wrk-hello-20261119T074508Z.json) — 2026-11-19T07:45:08+00:00, commit `55606c80`.
+Environment: Python 3.14.7; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.2.1 (26B131); AC Power; wrk -t2 -c16 -d8s, browser headers; executor loop: uvloop.
 
 | row | rps | cores | rps/core |
 |-----|----:|------:|---------:|
-| `m0serve` — zero-config executor (its loop is stamped above) | 138,776 | 1.64 | 84,619 |
-| `uvicorn --loop asyncio` | 59,186 | 1.00 | 59,186 |
-| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 84,634 | 0.99 | 85,489 |
+| `m0serve` — zero-config executor (its loop is stamped above) | 140,267 | 1.65 | 85,010 |
+| `uvicorn --loop asyncio` | 61,526 | 0.99 | 62,148 |
+| `uvicorn` with uvloop — what `pip install uvicorn[standard]` runs by default | 86,063 | 0.99 | 86,932 |
 
 Cores: sampled `%cpu` of the pids on the listen socket.
 <!-- /generated: asgi-wrk-hello -->
@@ -127,11 +127,11 @@ Cores: sampled `%cpu` of the pids on the listen socket.
 The loop holds no thread state while it serves
 ([notes/detached-loop.md](notes/detached-loop.md)), so its parsing and
 writing overlap the executor's Python, and this row runs at
-<!-- num:asgi-m0-cores@2 -->1.64<!-- /num --> cores:
-**<!-- num:asgi-vs-uvicorn@2 -->2.34<!-- /num -->x `uvicorn --loop asyncio`**
-and <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x uvicorn with uvloop in
-requests per second, <!-- num:asgi-per-core-vs-uvicorn@2 -->1.43<!-- /num -->x
-and <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x per core. The
+<!-- num:asgi-m0-cores@2 -->1.65<!-- /num --> cores:
+**<!-- num:asgi-vs-uvicorn@2 -->2.28<!-- /num -->x `uvicorn --loop asyncio`**
+and <!-- num:asgi-vs-uvloop@2 -->1.63<!-- /num -->x uvicorn with uvloop in
+requests per second, <!-- num:asgi-per-core-vs-uvicorn@2 -->1.37<!-- /num -->x
+and <!-- num:asgi-per-core-vs-uvloop@2 -->0.98<!-- /num -->x per core. The
 executor can use two cores, and uvicorn one. The 2026-08 concurrency
 tables and the loop-by-loop comparison are in
 [The ASGI executor against uvicorn](notes/the-asgi-executor-against-uvicorn.md).
@@ -143,13 +143,13 @@ slow ones are in flight. Four threads measure `/` while two hammer
 `/slow?ms=200`. The comparator is `uvicorn --loop asyncio`.
 
 <!-- generated: asgi-executor -- edit bench/results, not this table -->
-Source: [`asgi-executor-20261023T023826Z.json`](../bench/results/asgi-executor-20261023T023826Z.json) — 2026-10-23T02:38:26+00:00, commit `d207a9ef`.
-Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; seconds=8, threads=8.
+Source: [`asgi-executor-20261119T074545Z.json`](../bench/results/asgi-executor-20261119T074545Z.json) — 2026-11-19T07:45:45+00:00, commit `55606c80`.
+Environment: Python 3.14.7; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.2.1 (26B131); AC Power; seconds=8, threads=8.
 
 | server | rps | fast p50 | fast p99 | errors |
 |--------|----:|---------:|---------:|-------:|
-| `m0serve` — asyncio executor | 29,462 | 139 µs | 343 µs | 0 |
-| `uvicorn` | 23,835 | 169 µs | 375 µs | 0 |
+| `m0serve` — asyncio executor | 29,012 | 143 µs | 356 µs | 0 |
+| `uvicorn` | 22,853 | 182 µs | 406 µs | 0 |
 
 Fast-request latency is measured while slow requests are in flight; rps and the two percentiles come from the same run, so they trade against each other rather than being separately optimised rows.
 <!-- /generated: asgi-executor -->
@@ -176,20 +176,20 @@ fast-route p99 climbs from <!-- num:isolation-nopool-slow0-ms@1 -->0.6<!-- /num 
 to <!-- num:isolation-nopool-slow2-ms@0 -->195<!-- /num --> ms as slow views
 are added, most of the <!-- num:isolation-hold-ms@0 -->200<!-- /num --> ms
 hold. With the pool it stays at
-<!-- num:isolation-pool-slow2-ms@1 -->1.3<!-- /num --> ms. That is a
-<!-- num:isolation-ratio@0 -->148<!-- /num -->x change. Prefork and
+<!-- num:isolation-pool-slow2-ms@1 -->1.4<!-- /num --> ms. That is a
+<!-- num:isolation-ratio@0 -->144<!-- /num -->x change. Prefork and
 threads fail the same way and are fixed the same way.
 
 <!-- generated: mixed-workload -- edit bench/results, not this table -->
-Source: [`mixed-workload-20261023T052228Z.json`](../bench/results/mixed-workload-20261023T052228Z.json) — 2026-10-23T05:22:28+00:00, commit `d207a9ef`.
-Environment: Python 3.14.7 free-threading build; granian 2.8.4; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; wrk -c16 -d10s, 3 rounds, medians.
+Source: [`mixed-workload-20261119T080649Z.json`](../bench/results/mixed-workload-20261119T080649Z.json) — 2026-11-19T08:06:49+00:00, commit `55606c80`.
+Environment: Python 3.14.7 free-threading build; granian 2.8.8; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.2.1 (26B131); AC Power; wrk -c16 -d10s, 3 rounds, medians.
 
 | configuration | slow=0 | slow=1 | slow=2 |
 |---|---|---|---|
-| `--workers 4` | 0.6 ms (0.6–0.6) | 189.6 ms (186.6–191.7) | 195.0 ms (195.0–195.4) |
-| `--threads 4` | 0.7 ms (0.7–0.7) | 194.8 ms (194.7–194.9) | 199.7 ms (199.6–199.8) |
-| `--workers 4 +bt=4` | 1.4 ms (1.4–1.8) | 1.4 ms (1.4–1.5) | 1.3 ms (1.3–1.3) |
-| `--threads 4 +bt=4` | 0.9 ms (0.9–1.1) | 0.9 ms (0.9–0.9) | 0.9 ms (0.9–1.0) |
+| `--workers 4` | 0.6 ms (0.6–0.6) | 190.2 ms (189.4–191.0) | 195.0 ms (194.6–197.1) |
+| `--threads 4` | 0.7 ms (0.7–0.7) | 192.9 ms (191.9–194.9) | 199.5 ms (198.4–199.7) |
+| `--workers 4 +bt=4` | 1.4 ms (1.4–1.4) | 1.4 ms (1.4–1.4) | 1.4 ms (1.3–1.5) |
+| `--threads 4 +bt=4` | 1.0 ms (0.9–1.2) | 0.9 ms (0.8–0.9) | 0.9 ms (0.9–1.0) |
 | `--workers 1 +bt=4` | 0.5 ms (0.5–0.5) | 0.4 ms (0.4–0.4) | 0.5 ms (0.5–0.5) |
 | `granian bt=4` | 0.5 ms (0.5–0.6) | 0.5 ms (0.5–0.5) | 0.5 ms (0.5–0.5) |
 

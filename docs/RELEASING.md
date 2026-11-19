@@ -36,7 +36,13 @@ nothing else running and `mediaanalysisd` stopped for it alone:
 `probe-pool-fairness`, `probe-pool`, the benches when due,
 `bench-linux-conclusions`, and `stress-asgi` last, since its CPU hogs'
 load reaches whatever is measured next. The pool A/Bs, when owed, run
-before `stress-asgi` or long after it, never straight after. The
+before `stress-asgi` or long after it, never straight after. A stage
+started in the background from zsh runs at nice 5 (its `BG_NICE` option),
+and on the reference Mac that cost four prefork workers half a core in
+1.18.0's run: host-modes' `workers=N` rows read 14 % low and the mixed
+workload's `--workers 4` rows 30 % low, while every one-process row held.
+Start a detached stage after `unsetopt BG_NICE`, and read
+`ps -o nice= -p PID` before trusting it. The
 deterministic gates and the sabotages after. The container gates
 (`stress-pool`, `bench-linux-conclusions`, `autobahn`, `probe-mojo-image`,
 `sabotage-mojo-image` and `sabotage-scaffold`'s `image:` rules) each run

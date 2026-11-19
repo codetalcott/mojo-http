@@ -37,14 +37,14 @@ four handler threads behind it, while the Mojo mount spreads across its
 threads (SPEC M25).
 
 <!-- generated: mojo-mount -- edit bench/results, not this table -->
-Source: [`mojo-mount-20261023T022617Z.json`](../bench/results/mojo-mount-20261023T022617Z.json) — 2026-10-23T02:26:17+00:00, commit `d207a9ef`.
-Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; wrk -c8 -d5s, 3 rounds, medians.
+Source: [`mojo-mount-20261119T073505Z.json`](../bench/results/mojo-mount-20261119T073505Z.json) — 2026-11-19T07:35:05+00:00, commit `55606c80`.
+Environment: Python 3.14.7; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.2.1 (26B131); AC Power; wrk -c8 -d5s, 3 rounds, medians.
 
 | selected | numpy rps | cores | rps/core | Mojo rps | cores | rps/core | throughput | per core |
 |---------:|----------:|------:|---------:|---------:|------:|---------:|-----------:|---------:|
-| 100 % | 35,880 | 1.43 | 25,091 | 43,281 | 4.08 | 10,608 | 1.21x | 0.42x (0.42x) |
-| 25 % | 17,855 | 1.35 | 13,226 | 74,058 | 3.00 | 24,686 | 3.46x | 1.93x (1.87x) |
-| 5 % | 43,840 | 1.53 | 28,653 | 108,576 | 2.30 | 47,207 | 2.54x | 1.66x (1.65x) |
+| 100 % | 35,911 | 1.42 | 25,290 | 44,062 | 4.15 | 10,617 | 1.22x | 0.42x (0.42x) |
+| 25 % | 16,586 | 1.20 | 13,822 | 77,958 | 3.09 | 25,229 | 4.70x | 1.81x (1.82x) |
+| 5 % | 44,615 | 1.45 | 30,769 | 114,131 | 2.36 | 48,360 | 2.56x | 1.58x (1.57x) |
 
 Throughput and per core are Mojo over numpy: the median across rounds of the ratio within each round. In parentheses, the same per-core ratio from the medians block: median rps over median cores for each arm, which the columns to its left divide out to. Cores are the server process's CPU seconds over wall seconds across the measured window; both arms share one process, so the column is each arm's own load, measured one at a time. numpy 2.5.3.
 <!-- /generated: mojo-mount -->
@@ -60,15 +60,15 @@ the table's compute view. Each arm is a fresh server; keep-alive, with the
 keep-alive request cap off.
 
 <!-- generated: host-modes -- edit bench/results, not this table -->
-Source: [`host-modes-20261023T033908Z.json`](../bench/results/host-modes-20261023T033908Z.json) — 2026-10-23T03:39:08+00:00, commit `d207a9ef`.
-Environment: Python 3.13.6; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.0.1 (26A434); AC Power; wrk -c16,256 -d8s, 3 rounds, medians.
+Source: [`host-modes-20261119T074238Z.json`](../bench/results/host-modes-20261119T074238Z.json) — 2026-11-19T07:42:38+00:00, commit `55606c80`.
+Environment: Python 3.14.7; Apple M4 (10 cores: 4P+6E); 16 GB; macOS 27.2.1 (26B131); AC Power; wrk -c16,256 -d8s, 3 rounds, medians.
 
 | route, connections | 1 worker rps | 4 workers rps | cores | p99 ms | RSS MB | 4 threads rps | cores | p99 ms | RSS MB | throughput | per core | p99 | RSS |
 |:--|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|--:|
-| now c16 | 246,030 | 199,191 | 2.48 | 0.11 | 44 | 197,731 | 2.55 | 0.12 | 34 | 0.99x | 0.97x | 1.01x | 0.78x |
-| now c256 | 248,140 | 214,032 | 2.68 | 1.33 | 46 | 210,183 | 2.75 | 1.37 | 37 | 1.00x | 0.98x | 1.02x | 0.79x |
-| search c16 | 32,315 | 106,335 | 3.94 | 0.62 | 44 | 105,718 | 3.97 | 0.62 | 34 | 1.00x | 0.99x | 1.01x | 0.77x |
-| search c256 | 31,914 | 106,984 | 3.96 | 5.96 | 47 | 108,206 | 3.96 | 5.76 | 37 | 0.99x | 0.99x | 1.00x | 0.79x |
+| now c16 | 246,887 | 200,278 | 2.48 | 0.11 | 45 | 198,953 | 2.55 | 0.12 | 34 | 0.99x | 0.96x | 1.02x | 0.77x |
+| now c256 | 248,696 | 215,135 | 2.70 | 1.32 | 48 | 214,694 | 2.76 | 1.32 | 37 | 1.00x | 0.98x | 1.00x | 0.78x |
+| search c16 | 30,916 | 107,379 | 3.97 | 0.46 | 45 | 106,580 | 3.97 | 0.47 | 34 | 0.99x | 0.99x | 1.02x | 0.77x |
+| search c256 | 30,898 | 108,467 | 3.98 | 5.20 | 48 | 107,790 | 3.98 | 5.26 | 37 | 0.99x | 0.99x | 1.01x | 0.78x |
 
 The last four columns are threads over workers: the median across rounds of the ratio within each round, so throughput and per core above 1.00x favour threads and p99 and RSS below it do. Cores and RSS are summed over the server's whole process tree; summed RSS counts a page two workers share twice. `now` is answered on the loop and measures the loop; `search` is the table's compute view.
 <!-- /generated: host-modes -->

@@ -4,4 +4,4 @@
 (packaging/m0/hatch_version.py).
 """
 
-__version__ = "0.14.0"
+__version__ = "0.15.0"

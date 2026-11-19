@@ -46,7 +46,7 @@ from m0_http.limits import (
 from .ws_origin import normalize_ws_origin
 
 
-comptime M0SERVE_VERSION = "1.17.0"
+comptime M0SERVE_VERSION = "1.18.0"
 """Reported by `--version`. Bumped with the release (see docs/RELEASING.md)."""
 
 comptime DEFAULT_ATTRIBUTE = "application"

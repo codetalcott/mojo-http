@@ -83,8 +83,8 @@ The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 - A slow view does not stall the rest. Handler threads behind each
   event loop are the default for WSGI.
 - Throughput is level with the fast servers. Per
-  core on a bare ASGI app it is <!-- num:asgi-per-core-vs-uvloop@2 -->0.99<!-- /num -->x uvicorn with uvloop; it
-  serves <!-- num:asgi-vs-uvloop@2 -->1.64<!-- /num -->x the requests per second only because it uses
+  core on a bare ASGI app it is <!-- num:asgi-per-core-vs-uvloop@2 -->0.98<!-- /num -->x uvicorn with uvloop; it
+  serves <!-- num:asgi-vs-uvloop@2 -->1.63<!-- /num -->x the requests per second only because it uses
   <!-- num:asgi-m0-cores@1 -->1.6<!-- /num --> cores where uvicorn uses one. On bare WSGI, one worker with
   one handler thread each, Granian to m0serve is <!-- num:granian-vs-m0-rps@2 -->1.00<!-- /num -->x, a tie.
   Under mixed load its fast-request p99 is ahead of uvicorn's in every
