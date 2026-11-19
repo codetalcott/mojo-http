@@ -23,22 +23,22 @@ from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.testing import TestSuite, assert_equal, assert_false, assert_raises, assert_true
 from std.utils import StaticTuple
 
-from lightbug_http.address import (
+from m0_server.address import (
     NetworkType,
     TCPAddr,
     join_host_port,
     parse_address,
 )
-from lightbug_http.c.address import AddressFamily
-from lightbug_http.c.network import (
+from m0_server.c.address import AddressFamily
+from m0_server.c.network import (
     InetAddress,
     SocketAddress,
     inet_ntop,
     inet_pton,
     sockaddr_host_port,
 )
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.socket import (
+from m0_server.c.pipe import close_fd
+from m0_server.c.socket import (
     IPPROTO_IPV6,
     IPV6_V6ONLY,
     SOL_SOCKET,
@@ -49,9 +49,9 @@ from lightbug_http.c.socket import (
     getsockname,
     socket,
 )
-from lightbug_http.connection import ListenConfig
-from lightbug_http.socket import Socket
-from lightbug_http.uri import URI
+from m0_server.connection import ListenConfig
+from m0_server.socket import Socket
+from m0_server.uri import URI
 from test.loopback import connect
 
 

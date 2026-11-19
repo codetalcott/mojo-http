@@ -11,7 +11,7 @@ belongs. These tests read both forms of every conformer back.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.address import (
+from m0_server.address import (
     ParseEmptyAddressError,
     ParseEmptyPortError,
     ParseInvalidPortNumberError,
@@ -23,13 +23,13 @@ from lightbug_http.address import (
     ParseUnexpectedBracketError,
     ParseZoneError,
 )
-from lightbug_http.c.network import (
+from m0_server.c.network import (
     InetNtopEAFNOSUPPORTError,
     InetNtopENOSPCError,
     InetPtonInvalidAddressError,
 )
-from lightbug_http.connection import AddressParseError, ListenerError
-from lightbug_http.header import (
+from m0_server.connection import AddressParseError, ListenerError
+from m0_server.header import (
     EmptyBufferError,
     HeaderKeyNotFoundError,
     IncompleteHTTPRequestError,
@@ -37,9 +37,9 @@ from lightbug_http.header import (
     RequestParseError,
     UnsupportedHTTPRequestError,
 )
-from lightbug_http.http.parsing import HTTPParseError, IncompleteError, ParseError
-from lightbug_http.server import ProvisionError, ProvisionPoolExhaustedError, ServerError
-from lightbug_http.utils.error import CustomError
+from m0_server.http.parsing import HTTPParseError, IncompleteError, ParseError
+from m0_server.server import ProvisionError, ProvisionPoolExhaustedError, ServerError
+from m0_server.utils.error import CustomError
 
 
 def _reads_as_its_message[E: CustomError](e: E) raises:

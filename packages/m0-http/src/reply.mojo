@@ -11,8 +11,8 @@ here consults a request's `Accept` — `vary_accept` only *marks* a response
 whose representation was negotiated, leaving the policy to the app.
 """
 
-from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from m0_server.header import Header, Headers, HeaderKey
+from m0_server.http import HTTPRequest, HTTPResponse
 
 from m0_core.json_escape import escape_json_string
 

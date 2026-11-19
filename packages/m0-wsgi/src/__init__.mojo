@@ -1,6 +1,6 @@
 """`m0-wsgi`: run a WSGI application — Django, Flask, anything — on this server.
 
-A sibling of `m0-datastar`: it layers on `m0_http`/`lightbug_http` and nothing
+A sibling of `m0-datastar`: it layers on `m0_http`/`m0_server` and nothing
 here is imported back. **This is the only package that embeds CPython.** Keep
 it that way — a Python dependency in `m0-http` or `m0-core` would put libpython
 on the link line of every build in the repo.
@@ -114,7 +114,7 @@ from .cli import (
     is_compiled_mount,
     has_python_mount,
 )
-from lightbug_http.hold import (
+from m0_server.hold import (
     HoldResult,
     take_hold,
     take_stream_hold,

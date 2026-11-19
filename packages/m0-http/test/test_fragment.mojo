@@ -11,9 +11,9 @@ not lose a `Vary` the response already carried.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.http import HTTPRequest
-from lightbug_http.uri import URI
+from m0_server.header import Header, Headers, HeaderKey
+from m0_server.http import HTTPRequest
+from m0_server.uri import URI
 
 from src.fragment import PageShell, page_or_fragment, wants_fragment
 from src.reply import vary_accept

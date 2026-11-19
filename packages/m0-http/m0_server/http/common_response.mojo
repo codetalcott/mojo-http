@@ -1,0 +1,106 @@
+from m0_server.header import Header, HeaderKey, Headers
+from m0_server.http.response import HTTPResponse
+
+
+def OK(body: String, content_type: String = "text/plain") -> HTTPResponse:
+    return HTTPResponse(
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, content_type)),
+        body_bytes=body.as_bytes(),
+    )
+
+
+def BadRequest() -> HTTPResponse:
+    return HTTPResponse(
+        "Bad Request".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=400,
+        status_text="Bad Request",
+    )
+
+
+def NotFound(path: String = "") -> HTTPResponse:
+    """404, with a fixed body.
+
+    `path` is taken and not written. The body was `path <path> not found`,
+    which put a request's own bytes, markup included, into the server's
+    answer, with no `X-Content-Type-Options` to keep a browser from
+    sniffing it (review record LF57). Nothing read the text; the argument
+    stays so that every caller's `NotFound(path)` builds.
+    """
+    return HTTPResponse(
+        body_bytes=String("Not Found").as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=404,
+        status_text="Not Found",
+    )
+
+
+def PayloadTooLarge() -> HTTPResponse:
+    return HTTPResponse(
+        "Payload Too Large".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=413,
+        status_text="Payload Too Large",
+    )
+
+
+def URITooLong() -> HTTPResponse:
+    return HTTPResponse(
+        "URI Too Long".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=414,
+        status_text="URI Too Long",
+    )
+
+
+def RequestTimeout() -> HTTPResponse:
+    return HTTPResponse(
+        "Request Timeout".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=408,
+        status_text="Request Timeout",
+    )
+
+
+def HeadersTooLarge() -> HTTPResponse:
+    return HTTPResponse(
+        "Request Header Fields Too Large".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=431,
+        status_text="Request Header Fields Too Large",
+    )
+
+
+def NotImplemented() -> HTTPResponse:
+    """501: the request asks for something this server does not implement
+    (RFC 9110 §15.6.2) -- the `CONNECT` method, or a transfer coding before
+    the final `chunked`."""
+    return HTTPResponse(
+        "Not Implemented".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=501,
+        status_text="Not Implemented",
+    )
+
+
+def ServiceUnavailable(retry_after: Int) -> HTTPResponse:
+    """503 with `Retry-After` in seconds (RFC 9110 §15.6.4, §10.2.3): the
+    server is up and cannot take this now. A loop answers a stream with it
+    when streams already hold every slot it lets them take (SPEC C20)."""
+    var response = HTTPResponse(
+        "Service Unavailable".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=503,
+        status_text="Service Unavailable",
+    )
+    response.headers[HeaderKey.RETRY_AFTER] = String(retry_after)
+    return response^
+
+
+def InternalError() -> HTTPResponse:
+    return HTTPResponse(
+        "Failed to process request".as_bytes(),
+        headers=Headers(Header(HeaderKey.CONTENT_TYPE, "text/plain")),
+        status_code=500,
+        status_text="Internal Server Error",
+    )

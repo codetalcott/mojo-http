@@ -243,9 +243,9 @@ def request_body(case_dir):
 
 def program(all_cases):
     lines = [
-        "from lightbug_http.http import HTTPRequest",
-        "from lightbug_http.io.bytes import Bytes",
-        "from lightbug_http.uri import URI",
+        "from m0_server.http import HTTPRequest",
+        "from m0_server.io.bytes import Bytes",
+        "from m0_server.uri import URI",
         "from src.sse import execute_script, patch_elements, patch_signals, redirect",
         "from src.signals import read_signals",
         "",

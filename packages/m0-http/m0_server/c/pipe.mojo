@@ -1,0 +1,147 @@
+"""POSIX pipe() FFI for graceful event-loop shutdown.
+
+Usage:
+    var (read_fd, handle) = create_shutdown_pipe()
+    server.listen_and_serve_nonblocking(addr, handler, shutdown_read_fd=read_fd)
+    # ... later, to trigger clean shutdown:
+    handle.signal()
+"""
+
+from std.ffi import c_int, external_call, get_errno
+from std.memory.alloc import unsafe_alloc
+from std.sys.info import CompilationTarget
+
+from m0_server.c.aliases import ExternalMutPointer
+from m0_server.c.fcntl import mark_fresh_cloexec, O_CLOEXEC
+from m0_server.c.socket import _close
+from m0_server.c.socket_error import SysError
+
+
+def _pipe(fds: ExternalMutPointer[c_int]) -> c_int:
+    """Raw pipe() syscall."""
+    return external_call["pipe", c_int](fds)
+
+
+def close_fd(fd: Int):
+    """Close a descriptor, ignoring the result.
+
+    For a caller that is abandoning the descriptor: a half-built pipe or
+    channel, a timerfd, a hand-off that failed. Whatever close() reports
+    leaves nothing to do: EBADF means it was not open, and an EINTR or EIO
+    arrives with the number already released on Linux and macOS (see
+    `Socket.close`), so it must not be closed again.
+
+    Args:
+        fd: The descriptor to close.
+    """
+    _ = _close(c_int(fd))
+
+
+comptime _OpaqueConst = Pointer[NoneType, ImmUntrackedOrigin]
+"""write(2) does not modify its buffer, so the source pointer is immutable.
+Origins are erased in the C signature, so this still matches the declaration
+the stdlib emits for this symbol."""
+
+comptime _NUDGE_BYTE = "!"
+"""The byte `notify` writes. Its value is arbitrary — the loop only reads
+"this fd became readable" — but its *storage* is not: see `notify`."""
+
+
+def _write(fd: Int, buf: _OpaqueConst, count: Int) -> Int:
+    """Raw write() syscall.
+
+    The argument types match the declaration the stdlib already emits for this
+    symbol; a differently-shaped one is rejected as a conflicting signature.
+    """
+    return external_call["write", Int, c_int, _OpaqueConst, Int](c_int(fd), buf, count)
+
+
+struct ShutdownHandle(Movable):
+    """Write end of a graceful-shutdown pipe.
+
+    The event loop registers the read end for reads (`shutdown_read_fd`,
+    on kqueue or epoll alike). `notify` makes it readable and `signal`
+    closes the write end, which reports EOF on it; the loop reads any event
+    on it as the stop, and drains in-flight work before it returns.
+    """
+
+    var fd: Int
+
+    def __init__(out self, fd: Int):
+        self.fd = fd
+
+    def signal(self):
+        """Trigger graceful shutdown by closing the write end of the pipe.
+
+        The event loop sees EV_EOF on the read end and exits cleanly. This is
+        the programmatic path — a `/shutdown` endpoint, a test. **Signal
+        handlers must use `notify` instead**: close() is async-signal-safe, but
+        it is not repeat-safe, and see `notify` for why that matters.
+        """
+        _ = _close(c_int(self.fd))
+
+    def notify(self):
+        """Trigger graceful shutdown by writing one byte to the pipe.
+
+        What a signal handler calls. Both write() and close() are
+        async-signal-safe, but only write() is safe to repeat: SIGTERM
+        followed by SIGINT would close the same fd twice, and in between the
+        kernel is free to hand that number to a freshly accepted connection —
+        so the second close would drop a live client instead. Writing is
+        idempotent, and the event loop treats "readable" and "EOF" on this fd
+        identically.
+
+        A full pipe (EAGAIN) or a closed read end (EPIPE) is ignored: the
+        first means a shutdown is already queued, the second that the loop is
+        already gone.
+        """
+        # The byte is sourced from .rodata, not from a local. A `var byte =
+        # UInt8(1)` here compiles and writes A byte, but the address has to be
+        # handed to an `external_call` as an untracked pointer, which severs
+        # the alias information — the store is then dead-coded and the pipe
+        # receives whatever the stack slot happened to hold. Verified: it wrote
+        # 0x00. A literal's pointer is immortal, always initialised, and needs
+        # no allocation, which a signal handler could not do anyway.
+        _ = _write(
+            self.fd,
+            _NUDGE_BYTE.ptr().unsafe_bitcast[NoneType]().unsafe_origin_cast[
+                ImmUntrackedOrigin
+            ](),
+            1,
+        )
+
+
+def create_shutdown_pipe() raises SysError -> Tuple[Int, ShutdownHandle]:
+    """Create a pipe pair for graceful event-loop shutdown.
+
+    Returns:
+        (read_fd, handle): Pass read_fd to Server.listen_and_serve_nonblocking
+        as the shutdown_read_fd keyword argument.  Hold handle and call
+        handle.signal() whenever you want the server to stop.
+
+    Raises:
+        SysError: `pipe` and its errno, if the call fails (EMFILE at the
+            descriptor limit).
+    """
+    # Freed below; `unsafe_alloc` is the non-Layout allocator (std.memory.alloc).
+    # Close-on-exec, both ends (SPEC G16): a child the application starts
+    # must not hold the server's shutdown pipe.
+    var fds = unsafe_alloc[c_int](count=2)
+    var ret: c_int
+    comptime if CompilationTarget.is_macos():
+        ret = _pipe(fds)
+    else:
+        # pipe2(O_CLOEXEC): born close-on-exec, with no window.
+        ret = external_call["pipe2", c_int](fds, c_int(O_CLOEXEC))
+    if ret == -1:
+        var errno = get_errno()
+        fds.unsafe_free()
+        raise SysError("pipe", errno)
+    var read_fd = Int(fds[unsafe_offset=0])
+    var write_fd = Int(fds[unsafe_offset=1])
+    fds.unsafe_free()
+    comptime if CompilationTarget.is_macos():
+        # Marked right after.
+        mark_fresh_cloexec(read_fd)
+        mark_fresh_cloexec(write_fd)
+    return (read_fd, ShutdownHandle(write_fd))

@@ -95,9 +95,9 @@ from std.python._cpython import (
     Py_ssize_t,
 )
 
-from lightbug_http import HTTPRequest, Headers, HeaderKey
-from lightbug_http.cookie import ResponseCookieJar
-from lightbug_http.header import name_is, span_breaks_header_line
+from m0_server import HTTPRequest, Headers, HeaderKey
+from m0_server.cookie import ResponseCookieJar
+from m0_server.header import name_is, span_breaks_header_line
 
 from .environ import (
     all_ascii,

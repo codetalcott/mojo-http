@@ -90,7 +90,7 @@ for the same reason `Htmx.swap` and `Datastar.swap` spell their attributes
 in one place.
 """
 
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from m0_server.http import HTTPRequest, HTTPResponse
 
 from .reply import html, reason_phrase, vary
 

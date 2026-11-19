@@ -19,7 +19,7 @@ cookie and the refusals. Every answer the session chose is `no_store`, so a
 cache in front never hands one visitor's page to another.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_host.host import HostContext, ViewState
 
 from m0_http import (

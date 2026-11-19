@@ -91,7 +91,7 @@ Run it:  uv run poe serve-table-notes
 
 from std.os import getenv
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_host.flags import host_config
 from m0_host.host import HostContext, ViewState, ViewsApp, serve
 

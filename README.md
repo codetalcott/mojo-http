@@ -98,7 +98,7 @@ Server-Sent Events and WebSockets, with a [Datastar](https://data-star.dev/)
 adapter for hypermedia UIs and SQLite and PostgreSQL bindings. The Python
 server above is one package in it (`m0-wsgi`).
 
-The server itself is a hard fork of
+The server itself, the package `m0_server`, is a hard fork of
 [lightbug_http](https://github.com/Lightbug-HQ/lightbug_http), taken from
 v26.1.2 and maintained here since upstream was archived on 2026-05-12. It adds
 hardening against request smuggling, slowloris, and integer overflow in
@@ -166,7 +166,7 @@ curl localhost:8080/health  # {"status":"ok"}
 [apps/hello/server.mojo](apps/hello/server.mojo), in full:
 
 ```mojo
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server import Server, HTTPService, HTTPRequest, HTTPResponse, OK
 from m0_http import AppConfig, install_shutdown_signals
 
 
@@ -588,4 +588,4 @@ Cross-package imports resolve through the `.mojoc` files, so run `build-all` aft
 
 MIT — see [LICENSE](LICENSE).
 
-`packages/m0-http/lightbug_http/` is a hard fork of MIT-licensed work by Valentin Erokhin. Upstream was archived and there is nothing to rebase onto or send patches to; this copy is maintained here. [NOTICE](NOTICE) records the provenance and every category of modification, and [PROVENANCE.md](PROVENANCE.md) explains how this repository was extracted from a private monorepo.
+`packages/m0-http/m0_server/` is a hard fork of MIT-licensed work by Valentin Erokhin. Upstream was archived and there is nothing to rebase onto or send patches to; this copy is maintained here. [NOTICE](NOTICE) records the provenance and every category of modification, and [PROVENANCE.md](PROVENANCE.md) explains how this repository was extracted from a private monorepo.

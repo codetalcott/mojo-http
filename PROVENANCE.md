@@ -10,10 +10,11 @@ This repository was extracted on 2026-08-12 from the private monorepo
 Commit hashes therefore differ from the source repo.
 
 History is **complete** for the paths above — including all 15 commits to
-`packages/m0-http/lightbug_http` that [NOTICE](NOTICE) refers to. But most of
-the commits carried over originally also touched files that stayed private
-(`m0-data`, `m0-hypermedia`, `apps/demo_*`, `agent/`, `RFC.md`), so their
-messages may describe work that is not visible here. A message mentioning
+`packages/m0-http/lightbug_http` that [NOTICE](NOTICE) refers to (the
+directory is `packages/m0-http/m0_server` since 2026-11-19, DECISIONS
+D70). But most of the commits carried over originally also touched files
+that stayed private (`m0-data`, `m0-hypermedia`, `apps/demo_*`, `agent/`,
+`RFC.md`), so their messages may describe work that is not visible here. A message mentioning
 GRAIL, Siren, or a task board is one of those.
 
 The 28 `lightbug_http` fork commits predating 2026-03-18 live in a third

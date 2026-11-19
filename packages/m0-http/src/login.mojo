@@ -39,10 +39,10 @@ D25 stand). It holds one identity, with its secret in the environment.
 
 from std.os import getenv
 
-from lightbug_http.header import HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.http.date import unix_now
-from lightbug_http.strings import is_token_char
+from m0_server.header import HeaderKey
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.http.date import unix_now
+from m0_server.strings import is_token_char
 
 from m0_core import constant_time_equal, sha256
 

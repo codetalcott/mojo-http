@@ -115,8 +115,8 @@ serves from one process (`max_workers`), so `M0_WORKERS=2` is refused with
 Run it:  uv run poe serve-fragment-notes
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.c.process import process_exit
+from m0_server import HTTPRequest, HTTPResponse
+from m0_server.c.process import process_exit
 from m0_host.host import HostContext, ViewState, ViewsApp, serve
 from m0_host.flags import host_config
 

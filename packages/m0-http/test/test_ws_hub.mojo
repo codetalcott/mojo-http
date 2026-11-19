@@ -8,7 +8,7 @@ queues it for B's sockets — not a mock of any of that.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.broadcast import BroadcastBus, drain_bus_channel
+from m0_server.broadcast import BroadcastBus, drain_bus_channel
 from src.multiworker import SharedAtomics
 from src.ws import WSHub, MAX_PENDING_BYTES
 

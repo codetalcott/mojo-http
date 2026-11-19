@@ -25,8 +25,8 @@ make a CR, LF or NUL of its own (SPEC G19): it decoded the overlong forms
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.cookie import Cookie, ResponseCookieJar
-from lightbug_http.header import (
+from m0_server.cookie import Cookie, ResponseCookieJar
+from m0_server.header import (
     Header,
     Headers,
     HEADER_VALUE_ASCII,
@@ -36,8 +36,8 @@ from lightbug_http.header import (
     header_value_kind,
     span_breaks_header_line,
 )
-from lightbug_http.http import HTTPResponse
-from lightbug_http.io.bytes import Bytes
+from m0_server.http import HTTPResponse
+from m0_server.io.bytes import Bytes
 
 
 comptime MARK = "hijack"

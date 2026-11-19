@@ -11,7 +11,7 @@ the parked-flag protocol around the ring; that is `test_offload.mojo`'s
 from std.ffi import c_int, external_call
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.ring import Ring
+from m0_server.ring import Ring
 
 from src.threads import (
     ThreadSet, ThreadBlock, BLK_INDEX, BLK_USER, BLK_STATUS, STATUS_OK,

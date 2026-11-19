@@ -16,7 +16,7 @@ body makes `poe test-http` die on this file.
 
 from std.testing import TestSuite, assert_equal, assert_true
 
-from lightbug_http.uri import URI, unquote
+from m0_server.uri import URI, unquote
 from test.support import _raw
 
 

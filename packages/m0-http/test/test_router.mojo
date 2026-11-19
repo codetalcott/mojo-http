@@ -2,7 +2,7 @@
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.uri import URI
+from m0_server.uri import URI
 from src.html import Datastar, Fragment
 from src.router import Mount, Query, Router, MatchResult, reverse, url_for
 

@@ -7,8 +7,8 @@ reads nothing in them.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.http import HTTPRequest
-from lightbug_http.uri import URI
+from m0_server.http import HTTPRequest
+from m0_server.uri import URI
 
 from src.feed import Feed, since_of, FEED_SLOT_BUDGET
 

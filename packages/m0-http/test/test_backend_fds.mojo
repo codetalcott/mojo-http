@@ -13,10 +13,10 @@ from std.ffi import c_int
 from std.sys.info import CompilationTarget
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.c.epoll_backend import EpollBackend
-from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.loop.state import TIMER_APP_TICK, TIMER_BODY
+from m0_server.c.epoll_backend import EpollBackend
+from m0_server.c.fcntl import F_GETFD, _fcntl
+from m0_server.c.platform import PlatformBackend
+from m0_server.loop.state import TIMER_APP_TICK, TIMER_BODY
 
 
 def _is_open(fd: Int) -> Bool:

@@ -9,7 +9,7 @@ non-decreasing in `le` order, and `le="+Inf"` equals `_count`.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.metrics import (
+from m0_server.metrics import (
     LATENCY_BUCKET_COUNT,
     ServerMetrics,
     latency_bucket_index,

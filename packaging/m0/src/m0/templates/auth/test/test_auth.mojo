@@ -10,11 +10,11 @@ the jar itself (`_signed_in`).
 from std.os import setenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.cookie import RequestCookieJar
-from lightbug_http.header import HeaderKey, Headers
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI
+from m0_server.cookie import RequestCookieJar
+from m0_server.header import HeaderKey, Headers
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.io.bytes import Bytes
+from m0_server.uri import URI
 
 from m0_http import CSRF_HEADER
 

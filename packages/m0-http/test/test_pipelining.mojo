@@ -15,9 +15,9 @@ answer copies nothing (review record LF72).
 from std.bit import count_leading_zeros, pop_count
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.connection import ConnectionState
-from lightbug_http.server import BodyReadState, ConnectionProvision, ProvisionPool
-from lightbug_http.server_config import ServerConfig
+from m0_server.connection import ConnectionState
+from m0_server.server import BodyReadState, ConnectionProvision, ProvisionPool
+from m0_server.server_config import ServerConfig
 
 
 def _provision_with(buf: String, request_end: Int) raises -> ConnectionProvision:

@@ -30,20 +30,20 @@ the path silently would shadow it.
 forked copy of a live interpreter is not safe — see `WSGIApp`.
 """
 
-from lightbug_http.broadcast import encode_bus_frame
-from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.c.process import getpid
-from lightbug_http.offload import (
+from m0_server.broadcast import encode_bus_frame
+from m0_server import HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server.c.process import getpid
+from m0_server.offload import (
     OffloadPool, STREAM_GEN_NONE, WS_DATAGRAM_MAX, ws_message_room,
     send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
     encode_ack, decode_ack,
 )
-from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.websocket import (
+from m0_server.header import Headers, Header, HeaderKey
+from m0_server.websocket import (
     websocket_upgrade, encode_ws_frame, close_frame, WS_OP_TEXT, WS_OP_CLOSE,
     WS_CLOSE_TOO_BIG,
 )
-from lightbug_http.c.platform import MSG_DONTWAIT
+from m0_server.c.platform import MSG_DONTWAIT
 
 from std.ffi import c_int, external_call, get_errno
 from std.python import Python
@@ -61,11 +61,11 @@ from .app import WSGIApp
 from .cli import match_mount, is_compiled_mount
 from .cli import ServeOptions, static_header_set
 from .ws_origin import ws_origin_allowed
-from lightbug_http.hold import (
+from m0_server.hold import (
     take_hold, request_last_event_id, ws_message_request, send_hold_frame,
     HOLD_STREAM, HOLD_WEBSOCKET,
 )
-from lightbug_http.broadcast import reserved_stream_url
+from m0_server.broadcast import reserved_stream_url
 from .threaded import ThreadHandler, ThreadContext
 
 
@@ -2090,7 +2090,7 @@ comptime ASGI_URL_CONTROL = UInt8(1)
 def asgi_stream_url(kind: String, slot: Int, lane: Int = -1) -> String:
     """`reserved_stream_url` under the name this package has always used:
     `\\x01<kind>/<slot>[/<lane>]`. The builder moved to the fork
-    (`lightbug_http/broadcast.mojo`) when the hold frame's sender did, so a
+    (`m0_server/broadcast.mojo`) when the hold frame's sender did, so a
     Mojo pool thread and this package spell one format from one function.
     """
     return reserved_stream_url(kind, slot, lane)
@@ -2333,7 +2333,7 @@ room left for the payload in one datagram is `WS_DATAGRAM_MAX` less this
 is this plus its payload (`_ws_in_cost`). The shim reads the same header
 as `_WS_TAG_HEADER`, which `render_shim.py --check` holds equal to this.
 A pool lane's message carries its channel too, a different header
-(`lightbug_http.offload.ws_message_room`)."""
+(`m0_server.offload.ws_message_room`)."""
 
 
 def _send_ws_message_tag(

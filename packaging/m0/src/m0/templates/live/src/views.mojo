@@ -10,7 +10,7 @@ Route placement is the thing to get right in a streaming app:
   handler of its own, and only the loop's stream is drained.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 
 from m0_datastar.stream import DatastarStream
 from m0_http import Views, reply

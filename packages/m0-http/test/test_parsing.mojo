@@ -15,7 +15,7 @@ prevent.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.header import (
+from m0_server.header import (
     Headers,
     ParsedRequestHeaders,
     EmptyBufferError,
@@ -27,9 +27,9 @@ from lightbug_http.header import (
     HeaderKey,
     holds_bare_lf,
 )
-from lightbug_http.http.chunked import HTTPChunkedDecoder
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.strings import is_token_char, next_list_member, trim_ows
+from m0_server.http.chunked import HTTPChunkedDecoder
+from m0_server.io.bytes import Bytes
+from m0_server.strings import is_token_char, next_list_member, trim_ows
 
 
 # --- Helpers -----------------------------------------------------------------

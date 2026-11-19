@@ -27,10 +27,10 @@ from pathlib import Path
 
 from sabotage_lib import POE, Command, rule, run
 
-PARSING = Path("packages/m0-http/lightbug_http/http/parsing.mojo")
-HEADER = Path("packages/m0-http/lightbug_http/header.mojo")
-REQUEST = Path("packages/m0-http/lightbug_http/loop/request.mojo")
-FRAMING = Path("packages/m0-http/lightbug_http/framing.mojo")
+PARSING = Path("packages/m0-http/m0_server/http/parsing.mojo")
+HEADER = Path("packages/m0-http/m0_server/header.mojo")
+REQUEST = Path("packages/m0-http/m0_server/loop/request.mojo")
+FRAMING = Path("packages/m0-http/m0_server/framing.mojo")
 
 # (label, file, old, new, the case whose MISMATCH line must appear); a rule
 # that takes two edits gives a tuple of each.

@@ -165,9 +165,9 @@ body.
 """
 
 from std.sys import stderr
-from lightbug_http.header import HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.service import HTTPService
+from m0_server.header import HeaderKey
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.service import HTTPService
 
 from .reply import empty, problem
 from .router import Mount, Router, _list_contains

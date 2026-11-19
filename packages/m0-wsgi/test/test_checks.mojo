@@ -16,7 +16,7 @@ while the doctor said 0.
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.c.process import DESCRIPTOR_MARGIN
+from m0_server.c.process import DESCRIPTOR_MARGIN
 from src.checks import (
     ServeCheck,
     CheckFacts,

@@ -14,12 +14,12 @@ from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 from std.testing import TestSuite, assert_equal, assert_true
 
-from lightbug_http.address import NetworkType, TCPAddr
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.socket import recv, send, spare_capacity
-from lightbug_http.connection import TCPConnection
-from lightbug_http.socket import EOF, Socket
+from m0_server.address import NetworkType, TCPAddr
+from m0_server.c.pipe import close_fd
+from m0_server.c.platform import MSG_DONTWAIT
+from m0_server.c.socket import recv, send, spare_capacity
+from m0_server.connection import TCPConnection
+from m0_server.socket import EOF, Socket
 
 comptime _UNTOUCHED: UInt8 = 0xAA
 comptime _SENT: UInt8 = 0x41

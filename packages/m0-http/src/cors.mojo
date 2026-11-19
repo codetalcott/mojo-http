@@ -4,7 +4,7 @@ Provides a CorsConfig struct and a pure function to apply CORS headers
 to an HTTPResponse. Replaces per-server _add_cors_headers() boilerplate.
 """
 
-from lightbug_http import HTTPResponse, HeaderKey
+from m0_server import HTTPResponse, HeaderKey
 
 
 struct CorsConfig(Copyable, Movable):

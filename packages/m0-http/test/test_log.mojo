@@ -9,7 +9,7 @@ and its time the wall clock.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.http.date import unix_now
+from m0_server.http.date import unix_now
 
 from src.log import (
     LogEntry, LogClock, format_json, format_access, realtime_ns,

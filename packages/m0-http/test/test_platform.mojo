@@ -1,6 +1,6 @@
 """The platform seam: one place chooses the OS multiplexer.
 
-`lightbug_http/c/platform.mojo` names `PlatformBackend` (kqueue on macOS,
+`m0_server/c/platform.mojo` names `PlatformBackend` (kqueue on macOS,
 epoll on Linux) and the two libc constants whose values differ between
 them. These tests prove the alias is a real backend on THIS operating
 system -- constructible through the trait-declared initializer, owning a
@@ -14,14 +14,14 @@ from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, TestSuite
 from std.time import perf_counter_ns
 
-from lightbug_http.c.kqueue import EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.platform import (
+from m0_server.c.kqueue import EV_EOF, EVFILT_READ, EVFILT_TIMER, EVFILT_WRITE
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.platform import (
     MSG_DONTWAIT,
     PlatformBackend,
     SC_NPROCESSORS_ONLN,
 )
-from lightbug_http.loop.state import TIMER_APP_TICK, TIMER_BODY
+from m0_server.loop.state import TIMER_APP_TICK, TIMER_BODY
 
 
 def test_platform_backend_is_a_constructible_multiplexer() raises:

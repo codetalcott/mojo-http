@@ -17,8 +17,8 @@ from std.memory.alloc import unsafe_alloc
 from std.sys.info import CompilationTarget
 from std.testing import TestSuite, assert_equal
 
-from lightbug_http.c.socket import IPPROTO_TCP, SOMAXCONN
-from lightbug_http.connection import ListenConfig
+from m0_server.c.socket import IPPROTO_TCP, SOMAXCONN
+from m0_server.connection import ListenConfig
 
 comptime _TCP_INFO = 11
 """Linux <netinet/tcp.h>."""

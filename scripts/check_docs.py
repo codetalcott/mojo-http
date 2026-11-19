@@ -1060,7 +1060,7 @@ def check_test_counts():
 
 
 def check_backend_seam():
-    """`lightbug_http/c/platform.mojo` is the ONE place an OS backend is chosen.
+    """`m0_server/c/platform.mojo` is the ONE place an OS backend is chosen.
 
     `PlatformBackend` (kqueue on macOS, epoll on Linux) used to be selected
     at five sites, each a `comptime if CompilationTarget.is_macos()` with
@@ -1072,12 +1072,12 @@ def check_backend_seam():
     may drive one backend on purpose) are the only exemptions.
     """
     allowed = {
-        "packages/m0-http/lightbug_http/c/platform.mojo",
-        "packages/m0-http/lightbug_http/c/kqueue_backend.mojo",
-        "packages/m0-http/lightbug_http/c/epoll_backend.mojo",
+        "packages/m0-http/m0_server/c/platform.mojo",
+        "packages/m0-http/m0_server/c/kqueue_backend.mojo",
+        "packages/m0-http/m0_server/c/epoll_backend.mojo",
     }
     chooses = re.compile(
-        r"^\s*from lightbug_http\.c\.(?:kqueue|epoll)_backend import"
+        r"^\s*from m0_server\.c\.(?:kqueue|epoll)_backend import"
         r"|\b(?:KqueueBackend|EpollBackend)\(",  # a call, not prose like `KqueueBackend (macOS)`
         re.M,
     )
@@ -1090,7 +1090,7 @@ def check_backend_seam():
                 fail(
                     f"{rel}: chooses an OS backend itself (imports or"
                     " constructs KqueueBackend/EpollBackend); go through"
-                    " lightbug_http/c/platform.mojo's PlatformBackend"
+                    " m0_server/c/platform.mojo's PlatformBackend"
                 )
 
 

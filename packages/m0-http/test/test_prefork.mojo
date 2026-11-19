@@ -11,14 +11,14 @@ descriptor in this process is exactly what it gets. The exec itself is
 from std.os import getenv, setenv, unsetenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.accept_share import (
+from m0_server.accept_share import (
     SHARED_PAGE_MAGIC,
     SHARED_PAGE_MAGIC_SLOT,
     accept_share_slots,
 )
 
-from lightbug_http.c.fcntl import clear_cloexec, is_cloexec
-from lightbug_http.c.process import fd_identity
+from m0_server.c.fcntl import clear_cloexec, is_cloexec
+from m0_server.c.process import fd_identity
 from src.multiworker import SharedAtomics, spawn_inherited_fds
 from src.prefork import (
     bind_accept_share,

@@ -19,8 +19,8 @@ from std.sys.info import CompilationTarget
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 from std.time import sleep
 
-from lightbug_http.c.pipe import create_shutdown_pipe
-from lightbug_http.c.process import (
+from m0_server.c.pipe import create_shutdown_pipe
+from m0_server.c.process import (
     DESCRIPTOR_CEILING, DESCRIPTOR_HEADROOM, DESCRIPTOR_MARGIN,
     DESCRIPTORS_PER_CONNECTION, SIGKILL,
     connections_within, descriptor_limit, exit_code, fork, max_files_per_process,

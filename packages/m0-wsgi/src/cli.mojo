@@ -26,14 +26,14 @@ from std.os import getenv
 from std.ffi import external_call
 from std.sys.info import CompilationTarget, num_performance_cores
 
-from lightbug_http.offload import (
+from m0_server.offload import (
     match_path_prefix, _WAKE_MAX_LANES, EXECUTOR_MAX_INFLIGHT,
     OFFLOAD_MAX_INFLIGHT, executor_inflight,
 )
-from lightbug_http.c.platform import SC_NPROCESSORS_ONLN
-from lightbug_http.address import join_host_port
-from lightbug_http.server_config import ServerConfig, reclaim_from_env
-from lightbug_http.header import Headers
+from m0_server.c.platform import SC_NPROCESSORS_ONLN
+from m0_server.address import join_host_port
+from m0_server.server_config import ServerConfig, reclaim_from_env
+from m0_server.header import Headers
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host, parse_env_int
 # `MAX_CONNECTIONS` is the host's bound too (SPEC E43), so it lives below
@@ -265,7 +265,7 @@ struct ServeOptions(Copyable, Movable):
     reply (RFC 6455 5.5.1). With no sweep there is nothing to reap a peer
     that never replies, so that configuration deliberately keeps the older
     close-at-once behaviour rather than leaking the slot -- see
-    `WS_CLOSE_LINGER_NS` in lightbug_http/loop/state.mojo.
+    `WS_CLOSE_LINGER_NS` in m0_server/loop/state.mojo.
     """
     var body_timeout: Int
     """`--body-timeout` / `M0_BODY_TIMEOUT`: seconds a request body may take
@@ -1573,7 +1573,7 @@ def match_mount(prefixes: List[String], path: String) -> Int:
     """Index of the mount serving `path`, or -1 when none does.
 
     One line, because the rule belongs to exactly one implementation:
-    `lightbug_http.offload.match_path_prefix`. The pool's `lane_for` routes
+    `m0_server.offload.match_path_prefix`. The pool's `lane_for` routes
     a job to a worker with the same answer this routes a request to an
     application, and the two must never disagree — a request served by the
     wrong mount is the failure this whole feature exists to avoid.

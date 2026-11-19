@@ -32,15 +32,15 @@ input bytes in hex.
 from std.os import getenv
 from std.testing import TestSuite, assert_equal, assert_true
 
-from lightbug_http.cookie import Cookie, ResponseCookieJar
-from lightbug_http.header import (
+from m0_server.cookie import Cookie, ResponseCookieJar
+from m0_server.header import (
     Header,
     Headers,
     encode_latin1_header_value,
     span_breaks_header_line,
 )
-from lightbug_http.http import HTTPResponse
-from lightbug_http.io.bytes import Bytes
+from m0_server.http import HTTPResponse
+from m0_server.io.bytes import Bytes
 
 from src.reply import redirect
 

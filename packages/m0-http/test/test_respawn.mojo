@@ -34,19 +34,19 @@ from src.multiworker import SharedAtomics, WorkerSupervisor, _forget_supervisor_
 from src.global_slot import record_supervisor_stop
 from src.signal import install_shutdown_signals
 from src.threads import _OpaqueMut, read_one_byte_blocking
-from lightbug_http.accept_share import (
+from m0_server.accept_share import (
     ACCEPT_SHARE_FIRST_WORKER_SLOT, ACCEPT_SHARE_WORKER_STRIDE, AcceptShare,
     STATE_LEFT, STATE_PARKED, accept_share_slots,
 )
-from lightbug_http.c.fdpass import send_fd
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.process import (
+from m0_server.c.fdpass import send_fd
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
     was_signaled, term_signal, exit_code, kill_process, SIGTERM, SIGKILL,
     executable_path, path_from_bytes,
 )
-from lightbug_http.c.socketpair import socketpair_dgram
+from m0_server.c.socketpair import socketpair_dgram
 
 
 def _scenario(crash_marker: String, ok_marker: String):

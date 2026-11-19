@@ -20,9 +20,9 @@ declines.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.http import HTTPRequest, HTTPResponse, OK
-from lightbug_http.service import HTTPService
-from lightbug_http.uri import URI
+from m0_server.http import HTTPRequest, HTTPResponse, OK
+from m0_server.service import HTTPService
+from m0_server.uri import URI
 
 
 @fieldwise_init

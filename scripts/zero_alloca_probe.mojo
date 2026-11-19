@@ -31,9 +31,9 @@ crashed the process.
 from std.ffi import c_char, c_int, external_call
 from std.memory import stack_allocation
 
-from lightbug_http.c.address import AddressFamily
-from lightbug_http.c.aliases import c_void
-from lightbug_http.c.network import inet_pton
+from m0_server.c.address import AddressFamily
+from m0_server.c.aliases import c_void
+from m0_server.c.network import inet_pton
 
 
 @export("zero_alloca_probe_inet4")

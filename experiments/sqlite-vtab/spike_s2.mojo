@@ -6,7 +6,7 @@ flat word buffer of Mojo `abi("C")` function addresses handed to
 sqlite3_create_module_v2 on a live connection.
 
 The module struct is built as a flat buffer rather than a Mojo struct, matching
-lightbug_http/c/epoll.mojo: a struct whose size is wrong by 4 bytes corrupts
+m0_server/c/epoll.mojo: a struct whose size is wrong by 4 bytes corrupts
 everything downstream silently.
 """
 

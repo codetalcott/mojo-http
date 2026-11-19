@@ -27,8 +27,8 @@ from std.ffi import ErrNo, c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.c.pipe import create_shutdown_pipe, ShutdownHandle
-from lightbug_http.c.fcntl import dup_cloexec
+from m0_server.c.pipe import create_shutdown_pipe, ShutdownHandle
+from m0_server.c.fcntl import dup_cloexec
 
 
 comptime BLK_INDEX = 0

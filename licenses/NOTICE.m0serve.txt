@@ -13,11 +13,12 @@ Copyright (c) 2023 Valentin Erokhin
 Licensed under the MIT License; see LICENSE.lightbug_http.txt for the full
 text.
 
-The HTTP/1.1 server this binary is built on is a hard fork of lightbug_http,
-taken from upstream release v26.1.2 (commit 3aae65f46a72, tagged 2026-02-22).
-Upstream was archived on 2026-05-12 and is no longer maintained. The fork has
-been substantially modified; the modifications are enumerated in the NOTICE
-file of the mojo-http source repository:
+The HTTP/1.1 server this binary is built on, mojo-http's package m0_server,
+is a hard fork of lightbug_http, taken from upstream release v26.1.2 (commit
+3aae65f46a72, tagged 2026-02-22). Upstream was archived on 2026-05-12 and is
+no longer maintained. The fork has been substantially modified; the
+modifications are enumerated in the NOTICE file of the mojo-http source
+repository:
 
     https://github.com/codetalcott/mojo-http/blob/main/NOTICE
 

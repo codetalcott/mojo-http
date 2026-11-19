@@ -9,13 +9,13 @@ mistake that both halves shared would otherwise pass unnoticed.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.http.chunked import (
+from m0_server.http.chunked import (
     HTTPChunkedDecoder,
     append_chunk_size,
     chunked_terminator,
     encode_chunk,
 )
-from lightbug_http.io.bytes import Bytes
+from m0_server.io.bytes import Bytes
 
 
 def _s(b: Bytes) -> String:

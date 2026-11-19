@@ -41,8 +41,8 @@ from std.os import getenv
 from std.sys import stderr
 from std.sys.arg import argv
 
-from lightbug_http.c.process import process_exit
-from lightbug_http.server_config import ServerConfig
+from m0_server.c.process import process_exit
+from m0_server.server_config import ServerConfig
 
 from m0_http.cmdline import is_long_flag, parse_int, read_long_flag
 from m0_http.config import AppConfig, listen_host

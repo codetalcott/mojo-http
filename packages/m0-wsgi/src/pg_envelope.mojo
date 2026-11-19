@@ -18,7 +18,7 @@ that wants structured data serializes it into the string itself
 (`row_to_json(NEW)::text`), which is what `m0pub.publish` already receives.
 """
 
-from lightbug_http.broadcast import channel_is_reserved
+from m0_server.broadcast import channel_is_reserved
 from m0_core.json_parse import has_json_field, parse_json_string
 
 

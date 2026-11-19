@@ -14,7 +14,7 @@ does for `test_hold`; nothing in these tests initializes an interpreter.
 
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http.event_loop_backend import EventLoopBackend
+from m0_server.event_loop_backend import EventLoopBackend
 from src.threaded import (
     asgi_free_threading_refusal,
     DetachingBackend,

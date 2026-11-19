@@ -75,9 +75,9 @@ from std.ffi import get_errno
 from std.os import getenv
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http import OK, HTTPRequest, HTTPResponse
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.process import getpid, process_exit
+from m0_server import OK, HTTPRequest, HTTPResponse
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.process import getpid, process_exit
 from m0_host.flags import host_config
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 

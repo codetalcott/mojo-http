@@ -4,8 +4,8 @@ The WSGI/ASGI gateway and the `m0serve` binary. The repository's
 `CLAUDE.md` still applies; this page adds what is specific to the gateway:
 embedding CPython, mounts and their lanes, and the execution modes with the
 rules each depends on. The handler-pool rules also govern files outside
-this directory — the fork's offload seam (`lightbug_http/offload.mojo`,
-`lightbug_http/offload_wire.mojo`, `lightbug_http/ring.mojo`, the event
+this directory — the fork's offload seam (`m0_server/offload.mojo`,
+`m0_server/offload_wire.mojo`, `m0_server/ring.mojo`, the event
 loop's pool and executor paths) and `m0_http.mojo_pool` — so read this
 page before editing those too.
 
@@ -590,7 +590,7 @@ M20). Three rules the pinned interop imposes and that the code depends on:
     has no window because the loop does not ack those sockets; `_ws_spend`
     returns uncharged there rather than pretending to gate.
   - **The handler pool (`M0_BLOCKING_THREADS`, `--blocking-threads N`;
-    `lightbug_http.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
+    `m0_server.offload` + `m0_wsgi.blocking_pool`).** Orthogonal to the
     two above, not a third alternative: it puts N handler threads behind
     *each* event loop, so `--workers W` is W processes of N and `--threads T`
     is T loops of N. The loop stops calling `HTTPService.func` and becomes an
@@ -655,7 +655,7 @@ M20). Three rules the pinned interop imposes and that the code depends on:
       fair arm records a request's share of the GIL against the window's
       1 ms edge.
     - **Jobs and completions ride in-memory rings; the socketpairs carry
-      only wakes and payloads** (`lightbug_http/ring.mojo`; the protocol
+      only wakes and payloads** (`m0_server/ring.mojo`; the protocol
       is `offload.mojo`'s module docstring; the measurement is
       docs/notes/pool-ring-handoff.md). The rule is an ORDER on each
       side. A pool thread whose ring is empty spins `POOL_SPIN_NS`, then

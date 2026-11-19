@@ -17,23 +17,23 @@ from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.accept_share import (
+from m0_server import HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server.accept_share import (
     AcceptShare, accept_share_slots, ACCEPT_SHARE_FIRST_WORKER_SLOT,
     ACCEPT_SHARE_WORKER_STRIDE, ACCEPT_SHARE_BUSY_NS, STATE_LEFT,
     STATE_NOT_STARTED, STATE_PARKED, HandoffPost, mark_reaped,
 )
-from lightbug_http.c.fdpass import (
+from m0_server.c.fdpass import (
     send_fd, recv_fd, FDPASS_MAX_PAYLOAD, RECV_FD_EMPTY, RECV_FD_REFUSED,
     _CMSG_HDR, _SCM_RIGHTS, _msghdr, _sendmsg, _store_u32,
 )
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.c.socket import iovec_t, send, recv, close, setsockopt, SocketOption, SOL_SOCKET
-from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.loop.accept import _admit_handoffs
-from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
-from lightbug_http.server_config import ServerConfig
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.c.socket import iovec_t, send, recv, close, setsockopt, SocketOption, SOL_SOCKET
+from m0_server.c.socketpair import socketpair_dgram
+from m0_server.c.platform import MSG_DONTWAIT, PlatformBackend
+from m0_server.loop.accept import _admit_handoffs
+from m0_server.loop.state import LoopState, UNUSED, _close_slot
+from m0_server.server_config import ServerConfig
 
 from src.multiworker import SharedAtomics
 

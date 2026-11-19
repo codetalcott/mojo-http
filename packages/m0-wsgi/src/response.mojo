@@ -33,10 +33,10 @@ as its own `(bytes, bytes)` list, no decode in between).
 
 from std.python import PythonObject
 
-from lightbug_http import HTTPResponse, Headers, HeaderKey
-from lightbug_http.cookie import ResponseCookieJar
-from lightbug_http.header import KH_CONTENT_LENGTH
-from lightbug_http.http import is_bodiless_status
+from m0_server import HTTPResponse, Headers, HeaderKey
+from m0_server.cookie import ResponseCookieJar
+from m0_server.header import KH_CONTENT_LENGTH
+from m0_server.http import is_bodiless_status
 from m0_http.reply import reason_phrase
 
 from .bridge import PyBridge

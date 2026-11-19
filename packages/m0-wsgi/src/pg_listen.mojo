@@ -78,8 +78,8 @@ from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
 from std.sys import stderr
 
-from lightbug_http.broadcast import publish_to_channels
-from lightbug_http.c.pipe import ShutdownHandle, create_shutdown_pipe
+from m0_server.broadcast import publish_to_channels
+from m0_server.c.pipe import ShutdownHandle, create_shutdown_pipe
 from .blocking_pool import JOIN_TIMEOUT_NS
 from .pg_envelope import parse_notify_payload
 from m0_http import format_sse_event
@@ -173,7 +173,7 @@ def _poll_two(fd_a: Int, fd_b: Int, timeout_ms: Int) -> Tuple[Bool, Bool]:
     """`poll(2)` on two descriptors. Returns (a readable, b readable).
 
     The `pollfd` array is a flat byte buffer rather than a Mojo struct, for
-    the reason `lightbug_http/c/epoll.mojo` gives: Mojo cannot vary a
+    the reason `m0_server/c/epoll.mojo` gives: Mojo cannot vary a
     struct's fields by target, and a struct whose size is wrong corrupts
     everything after the first element in silence. `pollfd` is the same
     eight bytes on both targets here — `int fd; short events; short

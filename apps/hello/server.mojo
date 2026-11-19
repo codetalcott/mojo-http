@@ -1,4 +1,4 @@
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server import Server, HTTPService, HTTPRequest, HTTPResponse, OK
 from m0_http import AppConfig, install_shutdown_signals
 
 

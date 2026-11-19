@@ -65,5 +65,5 @@ writes differently. m0 never rewrites a project's files; `uv run m0 new
 until an application outside that repository has soaked on it.
 `m0/_build_info.json` records the tree.
 
-MIT. The `lightbug_http` fork inside is MIT too; both licences are in
-`m0/licenses/`.
+MIT. The `m0_server` package inside, a fork of lightbug_http, is MIT too;
+both licences are in `m0/licenses/`.

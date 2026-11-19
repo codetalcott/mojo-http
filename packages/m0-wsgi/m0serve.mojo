@@ -24,7 +24,7 @@ so every worker inherits one shared socket (gunicorn's model; per-worker
 blind on Linux). Which worker WINS an accept on it is the scheduler's, and
 it is the same worker nearly every time on both platforms, so under
 `--workers N` the winner passes each connection to the least-loaded sibling
-over a channel created here before the fork (`lightbug_http/accept_share.mojo`,
+over a channel created here before the fork (`m0_server/accept_share.mojo`,
 SPEC E16; `M0_ACCEPT_SHARE=0` is the A/B knob). Fork second, BEFORE any
 Python: Mojo initializes the interpreter lazily on first use, forking a live
 CPython is unsafe, and so each worker's own `WSGIApp` construction after
@@ -58,31 +58,31 @@ from std.sys import stderr
 from std.sys.arg import argv
 from std.sys.info import CompilationTarget
 
-from lightbug_http import Server, HTTPRequest, HTTPResponse
+from m0_server import Server, HTTPRequest, HTTPResponse
 from m0_http import PoolContext, PoolHandler
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 from m0_http import Mount, Views, reply
 from m0_http import GrantKeys, verify_grant
-from lightbug_http.http.date import unix_now
-from lightbug_http.broadcast import BroadcastBus
+from m0_server.http.date import unix_now
+from m0_server.broadcast import BroadcastBus
 from m0_postgres import PgLib
-from lightbug_http.event_loop import run_event_loop
-from lightbug_http.offload import (
+from m0_server.event_loop import run_event_loop
+from m0_server.offload import (
     OffloadPool, OFFLOAD_MAX_INFLIGHT,
 )
-from lightbug_http.accept_share import AcceptShare, accept_sharing_wanted
-from lightbug_http.connection import ListenConfig, NoTLSListener
-from lightbug_http.address import NetworkType, TCPAddr, is_ipv6_literal, parse_address
-from lightbug_http.c.address import AddressFamily
-from lightbug_http.socket import Socket
-from lightbug_http.c.process import (
+from m0_server.accept_share import AcceptShare, accept_sharing_wanted
+from m0_server.connection import ListenConfig, NoTLSListener
+from m0_server.address import NetworkType, TCPAddr, is_ipv6_literal, parse_address
+from m0_server.c.address import AddressFamily
+from m0_server.socket import Socket
+from m0_server.c.process import (
     DESCRIPTOR_HEADROOM, DESCRIPTORS_PER_CONNECTION, connections_within,
     executable_path, getpid, process_exit, raise_descriptor_limit,
 )
-from lightbug_http.c.fcntl import set_cloexec
-from lightbug_http.server_config import ServerConfig
-from lightbug_http.header import Header, Headers, HeaderKey
-from lightbug_http.c.platform import PlatformBackend
+from m0_server.c.fcntl import set_cloexec
+from m0_server.server_config import ServerConfig
+from m0_server.header import Header, Headers, HeaderKey
+from m0_server.c.platform import PlatformBackend
 
 from m0_http import (
     StaticFiles, WorkerSupervisor, install_shutdown_signals, exit_worker,

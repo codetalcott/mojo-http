@@ -23,9 +23,9 @@ from pathlib import Path
 
 from sabotage_lib import MojoRun, rule, run
 
-HEADER = Path("packages/m0-http/lightbug_http/header.mojo")
-JAR = Path("packages/m0-http/lightbug_http/cookie/response_cookie_jar.mojo")
-RESPONSE = Path("packages/m0-http/lightbug_http/http/response.mojo")
+HEADER = Path("packages/m0-http/m0_server/header.mojo")
+JAR = Path("packages/m0-http/m0_server/cookie/response_cookie_jar.mojo")
+RESPONSE = Path("packages/m0-http/m0_server/http/response.mojo")
 REPLY = Path("packages/m0-http/src/reply.mojo")
 TEST = Path("packages/m0-http/test/test_header_bytes.mojo")
 PROPERTY = "test_random_bytes_never_put_a_line_break_in_a_head"

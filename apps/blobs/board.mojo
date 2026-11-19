@@ -12,7 +12,7 @@ than through anything `malloc`'d:
   publishes. `/stats` reads them, and the gate reads `/stats`.
 
 A shared page because it is the channel that survives `fork()`.
-`lightbug_http/ring.mojo` would carry a drop between threads just as well,
+`m0_server/ring.mojo` would carry a drop between threads just as well,
 but its memory is `malloc`'d, and under the Mojo host a click routinely
 lands on worker 1 while the producer runs in worker 0. The host creates the
 page before the fork, sized by `board_slots` for its worker count

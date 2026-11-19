@@ -7,7 +7,7 @@ so the two cannot drift: m0serve's `cli.mojo` and the host's `host.mojo`
 build their `ServerConfig` notices from these (SPEC C20, C23, E43).
 """
 
-from lightbug_http.server_config import ServerConfig
+from m0_server.server_config import ServerConfig
 
 
 comptime MAX_CONNECTIONS = 65536
