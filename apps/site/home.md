@@ -48,15 +48,10 @@ The view runs first, with sessions and permissions in hand, so authorization
 stays where it is. Under gunicorn the two headers pass through unread and the
 same view returns a short plain response.
 
-The design is not new. It is Fanout's GRIP protocol, which
-[Pushpin](https://pushpin.org/) has served since 2013: `Grip-Hold` and
-`Grip-Channel` on a response tell a proxy in front of the application to
-hold the connection, and WebSocket messages reach the application as HTTP
-requests. m0serve does the same inside the server that runs the view.
-There is no proxy to deploy beside it, and a publish is a write to a local
-socket rather than a request to a publish endpoint. Pushpin fronts any
-backend in any language and scales as a tier of its own; m0serve serves
-Python applications, one server per machine.
+m0serve adapts [Pushpin](https://pushpin.org/)'s GRIP protocol: in
+Pushpin a separate proxy holds the connection, and in m0serve the server
+that ran the view holds it. Use Pushpin instead to front a backend in
+another language, or to run held connections as a tier of their own.
 
 The name is m0serve with a zero, like the packages underneath it: `m0-core`,
 `m0-http`, `m0-wsgi`.
