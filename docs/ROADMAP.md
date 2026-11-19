@@ -241,7 +241,7 @@ optimising the HTTP layer buys nothing here.
 
 ## Recently resolved
 
-Nothing yet in the 1.18.0 train. An issue resolved in an earlier train is
+Nothing yet in the 1.19.0 train. An issue resolved in an earlier train is
 in the [changelog](../CHANGELOG.md) under the release that resolved it,
 and in its note where it has one.
 

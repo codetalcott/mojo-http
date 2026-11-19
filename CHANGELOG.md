@@ -13,6 +13,23 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+## [1.18.0] — 2026-11-19
+
+The second release on the two-weekly train ([Releases](docs/RELEASES.md)),
+with `m0 0.15.0` beside it. Five changes of behaviour are listed under
+Behaviour changes. Three bring an ASGI application's answers to uvicorn's:
+a response's head goes out when the application sends it, a streamed body
+keeps the `Content-Length` its head declared, and a request not yet
+answered hears its client leave. A WebSocket hold carries the cookies of
+the view that approved it, and every line the server prints about itself
+is on stderr. An ASGI application's requests all overlap, up to the
+loop's connections, and the 257th no longer runs on the loop's thread.
+`m0 0.15.0` carries the same framework and server: a Mojo host
+application takes `--max-connections` and `M0_MAX_CONNECTIONS`, says on
+stderr why a full loop refused, prints its notices on stderr, and its
+handler pool reserves 28 B a connection slot where it reserved 2380. The
+Mojo pin is unchanged at 1.2.0.
+
 ### Behaviour changes
 
 - **An ASGI response's head is sent when the application sends it** (SPEC
@@ -9401,6 +9418,7 @@ First release. Everything below is new.
   persistence, and SSE replay across restarts.
 - `django_wsgi` — a real Django project served by the WSGI host.
 
+[1.18.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.18.0
 [1.17.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.17.0
 [1.16.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.16.0
 [1.15.0]: https://github.com/codetalcott/mojo-http/releases/tag/v1.15.0

@@ -6,8 +6,8 @@ the latest minor cannot wait for the next one.
 
 ## The next train
 
-**1.18.0 leaves on Thursday 2026-11-19.** The train after it is 1.19.0 on
-Thursday 2026-12-03.
+**1.19.0 leaves on Thursday 2026-12-03.** The train after it is 1.20.0 on
+Thursday 2026-12-17.
 
 What a train carries so far:
 
