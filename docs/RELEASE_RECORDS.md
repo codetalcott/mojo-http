@@ -7,6 +7,109 @@ of both packages together. The rules these runs taught are in Releasing
 itself; a release before `m0` 0.1.0 is recorded in the
 [changelog](../CHANGELOG.md) alone.
 
+## m0 0.15.0 and m0serve 1.18.0 — 2026-11-19
+
+The second train ([Releases](RELEASES.md)), due Thursday 2026-11-19: its
+gates ran from 00:26 that morning and its tags went out at 05:13 local.
+`m0 0.15.0`: tag `m0-v0.15.0` at `bf930926`, cut beside m0serve 1.18.0. A
+minor release because `m0` bundles the host #658 changed (SPEC E43: a Mojo
+host application takes `--max-connections` and `M0_MAX_CONNECTIONS`, and a
+full loop says why it refused), the move of every notice to stderr, and the
+pool's tables #657 changed (SPEC C26). The Mojo pin is unchanged at 1.2.0.
+
+- Step 1: `sabotage-m0-wheel` 26 of 26 (659 s). `sabotage-scaffold` 84 of
+  84: the 72 rules outside `image:` in one run (1513 s), then each of the
+  twelve `image:` rules alone (74–138 s), a builder prune and an `fstrim -v
+  /var/lib/docker` between them. No expectation was stale. Before the run,
+  every anchor of the fourteen harnesses on `sabotage_lib` was applied to
+  the tree in memory: 341 rules, none stale.
+- Step 3: the local wheel, built on the merge commit, was
+  `m0-0.15.0-py3-none-any.whl`, 775,340 bytes, its `_build_info.json`
+  naming framework 1.18.0, `bf930926`, a clean tree, mojo 1.2.0 and
+  max-core 26.7.0; a scaffold from it pinned `mojo==1.2.0` and
+  `m0==0.15.0`.
+- Step 4: the release pull request (#707) was merged by the `automerge`
+  label, 19 checks green; the label went on after `Tests` had completed,
+  so `postgres-macos` was re-run to fire it. `build` read the pull request
+  head's run (`c2ecd032`), printed `m0 0.15.0, cut from bf930926…` and was
+  green at the first attempt. Its wheel artifact, the local wheel and the
+  file on the index share one SHA-256 (`18059c92…`).
+- The tags went out together at `bf930926`, `m0-v0.15.0` first, on the
+  owner's word. Both uploads waited for the owner, who approved `pypi-m0`
+  before `pypi`; they reached the index at 09:52 and 09:53 local.
+- Step 5 on macOS arm64: `uvx --refresh-package m0 m0 new probe` pinned
+  `m0==0.15.0`, and `uv.lock` named it from pypi.org. The scaffold, its
+  `uv sync`, the first build and `smoke.sh` took 19 s together, with no
+  warning; `m0 test` (6 of 6) passed, and every `m0 doctor` check passed,
+  `scaffold` saying the files match m0 0.15.0. `m0 image` built in 67 s,
+  colima started for it: 103.8 MB, 3.13 MB of it the app, `libsqlite3-0`
+  installed and no interpreter. The builder's `uv sync --frozen` installed
+  `m0==0.15.0` and `mojo-compiler==1.2.0` from the index.
+- Step 6: 8 blocks passed against the published package (34 s). `uvx m0
+  --version` read `m0 0.15.0`, and `uvx --from m0serve==1.18.0 m0serve
+  --version` read `m0serve 1.18.0`.
+- m0serve 1.18.0: `v1.18.0` at `bf930926`. The Release run built the
+  three wheels, inspected them, consumed each on a machine that did not
+  build it, published the GitHub release, and uploaded after the owner's
+  approval. The floors did not move (`macosx_13_0_arm64`,
+  `manylinux_2_35` on both Linux arches). Each file on the index has the
+  SHA-256 the release's `SHA256SUMS.txt` names, and the site deployed
+  after it (`deploy`, `deploy-demo` and `deploy-blobs` green).
+- The pre-release run, for the record: every gate in this page, from a
+  release worktree with its own venv, on the bumped tree, 00:26–05:08
+  local, the quiet stage first. `probe-pool-fairness` (32 s) kept job
+  order, its barrier-off arm convoying and its keep-off arm starving;
+  `probe-pool` (898 s) held the pooled p99 at 0.2 ms at slow 0, 1 and 2;
+  `bench-linux-conclusions` (656 s) held all five conclusions;
+  `stress-asgi` 30 of 30 in both modes (193 s). `stress-pool` held 20 of
+  20 rounds and 40 of 40 holds in all three wake modes, `autobahn` held
+  its baseline with section 7 resumed once after the route's dropped
+  connect, `probe-mojo-image` read 10.8 MB idle and 12.1 MB at 100
+  connections, `sabotage-host` caught 73 of 73 (`--skip parallel` 2053 s,
+  `--only parallel` 21 s with `max-core` installed), and the other
+  sabotages caught every rule. No soak (both at 1.16.0, lag 2, within the
+  rule) and no pool A/B (neither the strides nor the park's look changed).
+- **The detached stages ran at nice 5.** Five macOS bench kinds were two
+  minors old and were re-recorded. `render_bench_docs --check` refused
+  two of them as drift: host-modes' `workers=N search` rows at -14 %
+  (3.42 cores where 1.16.0 had 3.96) and the mixed workload's
+  `--workers 4` rows at -30 %, -31 % and -14 %, all three rounds alike,
+  with every one-process row and every comparator flat. An interleaved
+  A/B of v1.16.0, v1.17.0 and HEAD binaries on the Django `--workers 4`
+  arm, run in the foreground, cleared the code: 84.5k, 84.9k and 86.5k rps
+  on the GIL interpreter, 83.1k, 83.6k and 84.4k on free-threaded 3.14t.
+  The stages had been started in the background from zsh, whose
+  `BG_NICE` option runs every `&` job at nice 5; the foreground was at 0.
+  Interleaved 0 5 5 0 on HEAD, host-modes' `workers=N search` read 107.7k,
+  91.6k, 91.6k and 107.4k rps (3.97, 3.43, 3.43 and 3.97 cores) and the
+  Django arm 88.4k, 61.0k, 61.1k and 88.2k; one process of four threads,
+  and every one-process row, did not move. Every kind was re-recorded at
+  nice 0 and read on its history, and [Releasing](RELEASING.md) now
+  names the trap. The other quiet-stage gates had also run at nice 5 and
+  passed their bounds there: the pool probes serve one process, and the
+  Linux bench compares arms that shared one VM.
+- **mojo-mount's drift was the baseline's.** At nice 0 its Mojo rows read
+  +5.3 % and +5.1 % against the 1.16.0 artifact with the numpy comparators
+  at +0.1 %. Of nine recordings that artifact had the lowest Mojo row at
+  sel=5 and the highest `python(sel=25)` comparator; the new rows were
+  0.5 % and 2 % above the best before them, and the nice-5 recording two
+  hours earlier read the same to 0.1 %. Committed with an
+  `--accept-drift` stamp.
+- **Playwright 1.65.2's headless shell does not run on macOS 27.2.1.**
+  `browser-notes-login`, `browser-blobs` and `browser-svg-sandbox` failed
+  at launch: the tasks borrow `--with playwright` unpinned, and
+  `chromium_headless_shell-1255` exits "GPU process isn't usable" on a
+  bare page outside the tree, `--disable-gpu` too, display awake or
+  asleep. Full Chromium 1255, WebKit, Firefox, and Playwright 1.64.1's
+  headless shell (1248) all draw that page. Each task's body was run
+  verbatim with `--with playwright==1.64.1` from a clean checkout of the
+  release head, and all four passed (14–16 s); the tasks were not
+  changed in the release.
+- `mediaanalysisd` was not signalled. It reached 0.9 of a core for 35 s
+  in the nice-0 mixed workload's second round, where one cell read 4 %
+  under its other two rounds; the table renders the median. Disk stayed
+  near 16 GiB.
+
 ## m0 0.14.0 and m0serve 1.17.0 — 2026-11-06
 
 The first train on the two-weekly cadence ([Releases](RELEASES.md)), due
