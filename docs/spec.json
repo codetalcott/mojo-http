@@ -970,6 +970,14 @@
       "evidence": "`test_bridge_build.mojo:test_a_bridge_after_the_first_parses_nothing` (every PR) \u2014 three bridges after a process's first must each peak under 1 MiB, as tracemalloc counts the construction; the second read 4,168,880 B before the change. `test_bridge_build.mojo:test_detecting_an_applications_protocol_parses_nothing`: a second detection, a mount's, under the same bound (4,168,856 B with detection parsing again); `test_bridge_build.mojo:test_each_bridge_runs_code_and_state_of_its_own`: two bridges share no namespace, function, code object or lifespan state, and sharing the code object fails it. The measurement, the server's idle memory under load included: [one-compile-a-process](notes/one-compile-a-process.md)"
     },
     {
+      "id": "E45",
+      "section": "E",
+      "category": "E. Process and worker model",
+      "capability": "A Mojo host application's view served by `ViewsApp` that answers m0serve's hold instruction (`M0-Hold`, any value) is answered 500, with neither instruction header, and one line on stderr naming the request and the fix: on the loop (`before_request`), in `func`, and on a pool thread alike. The host holds no connection for the header, which m0serve's Mojo mount holds under `--realtime` (N11); before, the view's short response went to the client with both headers and nothing said, so one views module built for both servers held under m0serve and answered a 13-byte event stream on the host. A handler of the application's own answers what it returns",
+      "status": "verified",
+      "evidence": "`Smoke test one views module on two hosts` (every PR) \u2014 the ramp module's `/x/hold`, asked of the host's lane of two, is a 500 without `M0-Hold`, and the host's stderr names `GET /x/hold`; `test_host.mojo:test_a_view_answering_a_hold_instruction_is_refused_by_name` the on-loop and dispatched answers each a 500 with neither header, an ordinary view 200, and the line escaping a request byte; `sabotage-host` (pre-release) reverts the refusal, each of its two call sites, and the line. The probe of all four placements, before and after: [hold-from-a-mojo-mount](notes/hold-from-a-mojo-mount.md#on-the-mojo-host)"
+    },
+    {
       "id": "E4",
       "section": "E",
       "category": "E. Process and worker model",

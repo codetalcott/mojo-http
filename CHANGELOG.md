@@ -13,6 +13,21 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+### Behaviour changes
+
+- **A Mojo host view that answers `M0-Hold` is a 500, named on stderr**
+  (SPEC E45). The hold instruction is m0serve's, and a view on a Mojo mount
+  takes one there under `--realtime` (SPEC N11). On the Mojo host nothing
+  read it: the view's
+  short response went to the client with both instruction headers, the
+  connection was not held, and the server said nothing, on the loop and on
+  a pool thread alike. A view `ViewsApp` serves that answers `M0-Hold` is
+  now answered 500 without either header, and the host prints one line naming
+  the request and the fix, to open the stream on the loop with a
+  `DatastarStream` or a `Feed`. There is no switch: it would only put the
+  silent answer back. A handler of the application's own is unchanged.
+  It reaches applications built with `m0` in its next release.
+
 ## [1.18.0] — 2026-11-19
 
 The second release on the two-weekly train ([Releases](docs/RELEASES.md)),

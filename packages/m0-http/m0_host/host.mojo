@@ -166,7 +166,11 @@ application's OWN settings stay in its own variables, and the doctor does
 not render them. The pool lane (D31) and the
 loops on threads (D35) are what v1 refused and are served now; a hold from a
 pool thread (`set_hold_notify`) is not, and a Mojo application that wants a
-held stream opens it on the loop.
+held stream opens it on the loop. Nor is m0serve's hold: a view `ViewsApp`
+serves that answers `M0-Hold` is answered 500 and named on stderr (SPEC
+E45), on the loop and on a pool thread alike, where it once went to the
+client as a short response nothing held. A handler of the application's
+own answers what it returns.
 """
 
 from m0_http.parallel_runtime import PARALLEL_RUNTIME_IMAGE, parallel_runtime_linked
@@ -189,9 +193,10 @@ from lightbug_http.c.process import (
 )
 from lightbug_http.connection import ListenConfig
 from lightbug_http.event_loop import run_event_loop
+from lightbug_http.hold import HOLD_HEADER
 from lightbug_http.offload import OffloadPool
 from lightbug_http.server_config import ServerConfig, reclaim_from_env
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from lightbug_http.http import HTTPRequest, HTTPResponse, InternalError
 from lightbug_http.service import HTTPService
 
 # Downward, through `m0_http.mojoc`: this package sits above both the fork
@@ -219,6 +224,7 @@ from m0_http.prefork import (
 )
 from m0_http.signal import install_shutdown_signals
 from m0_http.views import Views
+from m0_core.json_escape import escape_json_string
 
 from .flags import DOCTOR_FORMAT, HostFlags, read_flags_or_exit
 from m0_http.threads import (
@@ -465,12 +471,41 @@ trait ViewState(Movable, Deinitable):
         pass
 
 
+def hold_refused_line(req: HTTPRequest) -> String:
+    """What the host prints when a view answers `M0-Hold` (SPEC E45).
+
+    The request's method and path are request bytes, so they are printed
+    as one JSON string, through the escaper the access log uses.
+    """
+    return String(
+        "host: ", escape_json_string(req.method + " " + req.uri.path),
+        " answered M0-Hold, refused with 500: the Mojo host holds no"
+        " connection for that header (m0serve does, SPEC N11); open the"
+        " stream on the loop instead, with on_loop=True and a DatastarStream"
+        " or a Feed",
+    )
+
+
+def _refuse_hold(req: HTTPRequest, mut resp: HTTPResponse):
+    """Answer a hold instruction 500, by name (SPEC E45).
+
+    Under m0serve the same view holds the connection (SPEC N11); here
+    nothing reads the header, so the short response it rides on went to
+    the client, both headers with it, and nothing was held or said. Any
+    value of `M0-Hold`, since none means anything on the host.
+    """
+    if HOLD_HEADER in resp.headers:
+        print(hold_refused_line(req), file=stderr, flush=True)
+        resp = InternalError()
+
+
 struct ViewsApp[S: ViewState](AppHandler):
     """A `Views` table and its state as the host's handler.
 
     `m0_http.ViewService` with a `make`: it forwards `func` to `dispatch`,
     `before_request` to `answer_on_loop`, and the four stream hooks and
-    the tick to the state, whose defaults are the handler's.
+    the tick to the state, whose defaults are the handler's. An answer
+    carrying `M0-Hold`, from either, is refused 500 (`_refuse_hold`).
     """
 
     var views: Views[Self.S]
@@ -504,10 +539,18 @@ struct ViewsApp[S: ViewState](AppHandler):
     def before_request(mut self, req: HTTPRequest) -> Optional[HTTPResponse]:
         # With the state: an `on_loop` route is answered here, on the loop
         # instance, before the request becomes a pool job.
-        return self.views.answer_on_loop(req, self.state)
+        var answer = self.views.answer_on_loop(req, self.state)
+        if not answer:
+            return None
+        var resp = answer.take()
+        _refuse_hold(req, resp)
+        return resp^
 
     def func(mut self, req: HTTPRequest) raises -> HTTPResponse:
-        return self.views.dispatch(req, self.state)
+        # On the loop, or on a pool thread through `PoolLane.func`.
+        var resp = self.views.dispatch(req, self.state)
+        _refuse_hold(req, resp)
+        return resp^
 
     def sse_drain_slot(mut self, slot: Int) -> List[UInt8]:
         return self.state.sse_drain_slot(slot)

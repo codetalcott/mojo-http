@@ -42,7 +42,12 @@ stream (a `Feed`, a `DatastarStream`) forwards them to it. The fourth,
 forwards it to its stream's `take_ready` and answers True has each pass
 drain only the streams with something to send. The `views`, `board` and
 `auth` scaffolds are `ViewsApp`; `live`, whose handler owns a
-`DatastarStream` and a producer, is an `AppHandler` of its own.
+`DatastarStream` and a producer, is an `AppHandler` of its own. Under
+`ViewsApp`, a view that answers m0serve's hold instruction, `M0-Hold`, is
+answered 500 and named on stderr: the host holds no connection for that
+header, so a stream here is opened on the loop with a `DatastarStream` or
+a `Feed`. A handler of the application's own, `live`'s among them,
+answers what it returns.
 
 **`P: Producer`** is work on a cadence, off the event loop: `make(ctx)`, and
 `step(mut self, mut out: Publisher) -> Int`, which returns the nanoseconds

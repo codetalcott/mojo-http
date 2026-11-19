@@ -4,6 +4,8 @@
     GET  /x/now            the trivial route the placement gate times (loop)
     GET  /x/search?sel=&k= a compute view: a filtered similarity scan
     GET  /x/slow?ms=       a spin for `ms`: the placement load
+    GET  /x/hold           m0serve's hold instruction, which the two hosts
+                           answer differently on purpose (below)
 
 This is Phase 3 of the Mojo host plan (docs/notes/the-ramp-test.md, SPEC
 N20): the same `Views[Ramp]` table, the same view functions and the same
@@ -28,6 +30,12 @@ What the module must not do, and why:
   can supply: the prefix. `make(ctx: HostContext)` is the host's
   conformance; `Ramp.generate(at)` is what both adapters call.
 
+One route is outside the byte comparison by design. `/hold` answers
+`M0-Hold`: m0serve holds it under `--realtime` and serves it as an
+ordinary response without (SPEC N11), and the Mojo host, which holds no
+connection for the header, answers it 500 and names it on stderr (SPEC
+E45). `smoke-ramp` asks the host for it on the lane.
+
 The corpus and the scan are lifted from `packages/m0-wsgi/mount/
 m0serve_mount.mojo`, the demo mount, which keeps its job (its bodies name
 the thread on purpose, for `smoke-mojo-mount` and the fairness probe).
@@ -37,6 +45,7 @@ from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns
 
 from lightbug_http import HTTPRequest, HTTPResponse
+from lightbug_http.header import Header, HeaderKey, Headers
 from m0_host.host import HostContext, ViewState
 from m0_http import Html, Mount, Views, reply
 
@@ -48,6 +57,7 @@ comptime RAMP_INDEX = "/"
 comptime RAMP_NOW = "/now"
 comptime RAMP_SEARCH = "/search"
 comptime RAMP_SLOW = "/slow"
+comptime RAMP_HOLD = "/hold"
 """The routes, as values: given to the table and reversed by the index
 through the mount, so no link is spelled by hand."""
 
@@ -264,6 +274,24 @@ def ramp_slow(
     return reply.json(200, String("OK"), String('{"ms":', ms, "}"))
 
 
+def ramp_hold(
+    req: HTTPRequest, params: List[String], st: Ramp
+) raises -> HTTPResponse:
+    """An SSE hold as a Django view asks for one: the two instruction
+    headers on a short event-stream response. In the default placement,
+    so the host's lane answers it on a pool thread."""
+    return HTTPResponse(
+        body_bytes=String(": connected\n\n").as_bytes(),
+        headers=Headers(
+            Header(HeaderKey.CONTENT_TYPE, "text/event-stream"),
+            Header("M0-Hold", "stream"),
+            Header("M0-Channel", "ramp"),
+        ),
+        status_code=200,
+        status_text="OK",
+    )
+
+
 def ramp_urls(at: Mount) raises -> Views[Ramp]:
     """The table, registered under `at`. What both adapters build."""
     var v = Views[Ramp](at)
@@ -271,4 +299,5 @@ def ramp_urls(at: Mount) raises -> Views[Ramp]:
     v.add_loop("GET", RAMP_NOW, ramp_now)
     v.add_write("GET", RAMP_SEARCH, ramp_search)
     v.add_read("GET", RAMP_SLOW, ramp_slow)
+    v.add_read("GET", RAMP_HOLD, ramp_hold)
     return v^

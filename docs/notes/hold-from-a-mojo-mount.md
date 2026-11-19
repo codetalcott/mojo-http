@@ -128,7 +128,41 @@ driver, not this note.
 | --- | --- | --- |
 | `--realtime` on a server whose only mounts are ASGI and Mojo | `_realtime_without_wsgi` still refuses it; a Mojo mount can now take a hold, so the refusal is wider than its reason, but the executor's loop handler taking an `h` frame beside its own streams is unverified | a smoke that holds on the Mojo mount beside an ASGI mount, and a publish from the ASGI application reaching it |
 | A WebSocket hold from a Mojo mount | the pool thread would have to perform the 101 and inbound frames would have to reach it as `TAG_WS_MESSAGE` datagrams, which `mojo_pool`'s `next_job` skips by design | a Mojo application that needs a socket rather than a stream |
-| A hold from a Mojo server binary with no `m0serve` | the loop handler that reads the `h` frame is `WSGIHandler`'s; a standalone Mojo server has no handler that turns the frame into a subscription | a second loop handler implementing the `h` branch, pulled by such a binary |
+| A hold from a Mojo server binary with no `m0serve` | the loop handler that reads the `h` frame is `WSGIHandler`'s; a standalone Mojo server has no handler that turns the frame into a subscription. On the Mojo host a `Views` view that answers one is refused 500 since 2026-11-19 ([below](#on-the-mojo-host)) | a second loop handler implementing the `h` branch, pulled by such a binary |
+
+## On the Mojo host
+
+The same view on the Mojo host (`m0_host.serve`) was not held, and nothing
+said so. Measured on 2026-11-19 on the M4 (macOS 27.2.1, Mojo 1.2.0, main
+at v1.18.0's code) with a `Views` table whose view returns
+`Content-Type: text/event-stream`, `M0-Hold: stream`, `M0-Channel: news`
+and the body `: connected\n\n`, placement read back from `ctx.thread`:
+
+| placement | before | after (SPEC E45) |
+| --- | --- | --- |
+| no pool, `on_loop=True` | 200, `content-length: 13`, both headers on the wire, connection not held, stderr silent | 500, neither header, one line on stderr |
+| no pool, default placement | the same | the same |
+| `M0_BLOCKING_THREADS=2`, `on_loop=True` (the loop's instance) | the same | the same |
+| `M0_BLOCKING_THREADS=2`, default placement (pool thread 1) | the same | the same |
+
+A views module built for both servers, as `apps/ramp` is (SPEC N20), would
+hold under m0serve's `--realtime` and answer a 13-byte stream on the host;
+EventSource reconnects to a stream that ends, so a page would have retried
+it on its interval with no error shown (inferred, not run in a browser).
+The pass-through that lets a Django view degrade under gunicorn, and a
+mount's view under m0serve without `--realtime`, is a configuration away
+from holding. On the host no configuration holds it, so the short answer
+would be permanent and silent.
+
+The refusal is in `ViewsApp` (`_refuse_hold`), not in the loop's
+`_finish_response`, which every response crosses. There it would cover a
+handler of the application's own too, but it could not name the route,
+and `after_response` would have seen the 200 while the wire carried the
+500. A handler of the application's own answers what it returns. The line
+quotes the method and path through the escaper the access log uses, since
+both are request bytes. `smoke-ramp` asks the host's lane of two for the
+ramp module's `/x/hold` and reads the 500 and the line;
+`test_host.mojo` drives the on-loop and dispatched answers one by one.
 
 ## What is not claimed
 

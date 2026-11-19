@@ -8198,7 +8198,7 @@ python3 scripts/emit.py --covers N14 --task smoke-mount-seam
 # ports, and the m0serve binary in the smoke's own directory, beside the
 # runtime build-serve bundles there.
 [tool.poe.tasks.smoke-ramp]
-help = "One views module on two hosts: byte-identical answers, a followed link, and placement on m0serve and the Mojo host alike (SPEC N20)"
+help = "One views module on two hosts: byte-identical answers, a followed link, and placement on m0serve and the Mojo host alike (SPEC N20), and the host's refusal of a hold instruction (E45)"
 shell = """
 . scripts/smoke/lib.sh
 set -u
@@ -8229,6 +8229,16 @@ spawn host.log env M0_PORT=$hport M0_BLOCKING_THREADS=2 "$out/ramp"
 wait_ready http://127.0.0.1:$hport/x/now $pid
 pids="$pids $pid"
 grep -q 'handler thread(s) behind the loop' "$out/host.log" || fail "the host started no lane"
+
+# m0serve's hold instruction on the host (SPEC E45): /x/hold is in the
+# default placement, so the lane of two answers it on a pool thread, and
+# the host holds no connection for the header. It is a 500 without the
+# header, and the host's stderr names the request.
+hold_head=$(curl -s -D - -o /dev/null --max-time 5 http://127.0.0.1:$hport/x/hold | tr -d '\r')
+echo "$hold_head" | head -1 | grep -q ' 500 ' || fail "hold, host: /x/hold answered '$(echo "$hold_head" | head -1)', not 500: the host served m0serve's hold instruction as an ordinary response"
+if echo "$hold_head" | grep -qi '^m0-hold:'; then fail "hold, host: the 500 still carries M0-Hold"; fi
+grep -q 'host: "GET /x/hold" answered M0-Hold, refused with 500' "$out/host.log" || fail "hold, host: the host's stderr does not name the refused hold"
+echo "hold, host: 500 on the lane, named on stderr"
 
 # Bytes: the request set under the prefix, the followed link, and the
 # paths outside the prefix asserted per host.
@@ -8310,6 +8320,7 @@ python3 scripts/emit.py ramp.full_lane_worst_request_ms.host "$host_full_request
 python3 scripts/emit.py ramp.full_lane_now_ms.m0serve "$m0_full_ms" --unit ms --task smoke-ramp
 python3 scripts/emit.py ramp.full_lane_second_now_ms.m0serve "$m0_full_2nd" --unit ms --task smoke-ramp
 python3 scripts/emit.py --covers N20 --task smoke-ramp
+python3 scripts/emit.py --covers E45 --task smoke-ramp
 """
 
 # An SSE hold from a Mojo mount (SPEC N11). A view on the Mojo mount
@@ -9504,25 +9515,26 @@ echo "smoke-serve-parallel-runtime OK"
 python3 scripts/emit.py --covers E33 --task smoke-serve-parallel-runtime
 """
 
-# Each Mojo host rule, broken on purpose (SPEC E21-E32, E43, N18, N19):
+# Each Mojo host rule, broken on purpose (SPEC E21-E32, E43, E45, N18, N19):
 # twenty-four against smoke-host, seven against smoke-host-threads, two
-# against smoke-fragment-notes, six against test_host.mojo, six against test_prefork.mojo (the pre-fork
+# against smoke-fragment-notes, nine against test_host.mojo, six against test_prefork.mojo (the pre-fork
 # pieces both hosts share), ten against test_respawn.mojo (the supervisor's
 # part: a refusal ending the siblings, the respawn budget over a window, and
 # what a worker it gave up on was handed closed), one
 # against test_views.mojo (the placement flag), and the command line's
 # sixteen: ten against smoke-host-doctor, four against test_host_flags.mojo,
-# one against test_cmdline.mojo and one against test_config.mojo -- plus one
+# one against test_cmdline.mojo and one against test_config.mojo; one
+# against smoke-ramp (a refused hold's line on stderr, SPEC E45) -- plus one
 # against smoke-parallel-runtime, which needs the `max` group synced
 # (`--only parallel`), so the whole run is `uv run --group max poe
 # sabotage-host`: every other gate holds beside MAX too, the unit tests
 # supplying the parallel runtime's fact rather than reading the one `mojo
 # run` gives them there (ROADMAP Known issues). Pre-release:
-# seventy-three runs, over an hour; `--only doctor` is about five minutes;
+# seventy-seven runs, over an hour; `--only doctor` is about five minutes;
 # `--only threads` is about six minutes, and `--only unit`, `--only prefork`, `--only respawn` and `--only views` are
 # about one each.
 [tool.poe.tasks.sabotage-host]
-help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_cmdline, test_config, test_prefork, test_respawn, test_views, smoke-host-doctor or smoke-parallel-runtime fails for every one (SPEC E21-E32, E43, N19; run it as `uv run --group max poe sabotage-host` on Linux; on macOS, `--skip parallel` here, then `--only parallel` under `--group max`)"
+help = "PRE-RELEASE: revert each host, prefork, supervisor and placement rule and insist smoke-host, smoke-host-threads, test_host, test_host_flags, test_cmdline, test_config, test_prefork, test_respawn, test_views, smoke-host-doctor, smoke-parallel-runtime or smoke-ramp fails for every one (SPEC E21-E32, E43, E45, N19; run it as `uv run --group max poe sabotage-host` on Linux; on macOS, `--skip parallel` here, then `--only parallel` under `--group max`)"
 cmd = "python3 scripts/host_sabotage.py"
 
 # The Mojo host, on the smallest application that uses all of it (SPEC

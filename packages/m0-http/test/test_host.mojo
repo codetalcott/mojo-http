@@ -26,8 +26,10 @@ from m0_host.host import (
     Publisher,
     ViewState,
     ViewsApp,
+    hold_refused_line,
     host_refusal,
 )
+from lightbug_http.header import Header, HeaderKey, Headers
 from lightbug_http.http import HTTPRequest, HTTPResponse, OK
 from lightbug_http.uri import URI
 from lightbug_http.offload import OffloadPool
@@ -166,6 +168,57 @@ struct OneProcess(ViewState):
     @staticmethod
     def max_workers() -> Int:
         return 1
+
+
+struct Holds(ViewState):
+    """A table whose views answer m0serve's hold instruction, one on the
+    loop and one in the default placement, beside an ordinary view."""
+
+    var n: Int
+
+    def __init__(out self):
+        self.n = 0
+
+    @staticmethod
+    def make(ctx: HostContext) raises -> Self:
+        return Holds()
+
+    @staticmethod
+    def urls() raises -> Views[Self]:
+        var v = Views[Holds]()
+        v.add_read("GET", "/loop", _hold_view, on_loop=True)
+        v.add_read("GET", "/pool", _hold_view)
+        v.add_read("GET", "/plain", _plain_view, on_loop=True)
+        return v^
+
+    @staticmethod
+    def max_threads() -> Int:
+        return 0
+
+
+def _hold_view(
+    req: HTTPRequest, params: List[String], s: Holds
+) raises -> HTTPResponse:
+    return HTTPResponse(
+        body_bytes=String(": connected\n\n").as_bytes(),
+        headers=Headers(
+            Header(HeaderKey.CONTENT_TYPE, "text/event-stream"),
+            Header("M0-Hold", "stream"),
+            Header("M0-Channel", "news"),
+        ),
+        status_code=200,
+        status_text="OK",
+    )
+
+
+def _plain_view(
+    req: HTTPRequest, params: List[String], s: Holds
+) raises -> HTTPResponse:
+    return OK("plain")
+
+
+def _get(path: String) raises -> HTTPRequest:
+    return HTTPRequest(URI.parse(String("http://127.0.0.1") + path))
 
 
 struct PoolRead(ViewState):
@@ -455,6 +508,52 @@ def test_a_views_app_answers_for_its_state() raises:
     var page = _page(1)
     var app = ViewsApp[OneProcess].make(_ctx(1, page))
     assert_equal(app.state.worker, 0)
+
+
+def test_a_view_answering_a_hold_instruction_is_refused_by_name() raises:
+    """`M0-Hold` is m0serve's (SPEC N11): on the host nothing reads it, and
+    the short response it rode on went to the client. A `Views` view that
+    answers it is a 500, from `before_request` on the loop, from `func`,
+    and from a pool thread's `PoolLane`, with neither instruction header
+    left; an ordinary view is untouched, and the line printed names the
+    request as one escaped string.
+
+    covers: E45
+    """
+    var page = _page(1)
+    var ctx = _ctx(1, page)
+    var app = ViewsApp[Holds].make(ctx)
+
+    var early = app.before_request(_get("/loop"))
+    assert_true(Bool(early), "the on-loop hold was not answered on the loop")
+    var on_loop = early.take()
+    assert_equal(on_loop.status_code, 500)
+    assert_false("m0-hold" in on_loop.headers)
+    assert_false("m0-channel" in on_loop.headers)
+
+    var placed = app.func(_get("/pool"))
+    assert_equal(placed.status_code, 500)
+    assert_false("m0-hold" in placed.headers)
+    assert_false("m0-channel" in placed.headers)
+
+    var ctx_ptr = Pointer(to=ctx)
+    var addr = Pointer(to=ctx_ptr).unsafe_bitcast[Int]()[]
+    var lane = PoolLane[ViewsApp[Holds]].make(PoolContext(0, addr))
+    var pooled = lane.func(_get("/pool"))
+    assert_equal(pooled.status_code, 500)
+    assert_false("m0-hold" in pooled.headers)
+
+    var plain = app.before_request(_get("/plain"))
+    assert_true(Bool(plain))
+    assert_equal(plain.take().status_code, 200)
+
+    var req = _get("/pool")
+    var line = hold_refused_line(req)
+    assert_true(line.startswith('host: "GET /pool" answered M0-Hold'), line)
+    assert_true("on_loop=True" in line, line)
+    req.uri.path = String('/a"b')
+    assert_true('"GET /a\\"b"' in hold_refused_line(req), hold_refused_line(req))
+    _ = ctx
 
 
 def test_a_view_given_one_process_state_is_refused_on_the_pool() raises:
