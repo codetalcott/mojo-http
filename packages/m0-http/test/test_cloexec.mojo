@@ -11,13 +11,13 @@ from std.ffi import c_int, external_call, get_errno
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.c.fcntl import set_cloexec, is_cloexec, clear_cloexec, dup_cloexec
-from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.socket import socket as c_socket, accept_with_peer
-from lightbug_http.c.fdpass import send_fd, recv_fd
-from lightbug_http.c.process import shared_file_fd
-from lightbug_http.connection import ListenConfig
+from m0_server.c.fcntl import set_cloexec, is_cloexec, clear_cloexec, dup_cloexec
+from m0_server.c.socketpair import socketpair_dgram
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.socket import socket as c_socket, accept_with_peer
+from m0_server.c.fdpass import send_fd, recv_fd
+from m0_server.c.process import shared_file_fd
+from m0_server.connection import ListenConfig
 from test.loopback import create_connection
 from src.threads import dup_fd
 

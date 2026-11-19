@@ -1,5 +1,5 @@
 """Tests for the zstd binding a compressed stream writes through
-(`lightbug_http/c/zstd.mojo`; docs/notes/compressing-a-stream.md, step 2).
+(`m0_server/c/zstd.mojo`; docs/notes/compressing-a-stream.md, step 2).
 
 libzstd is opened at run time, so these run under `mojo run` with nothing
 linked. An absent library FAILS them, naming every path tried: every Linux
@@ -10,7 +10,7 @@ skip would be green having tested nothing.
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.c.zstd import (
+from m0_server.c.zstd import (
     DEFAULT_WINDOW_LOG, ZSTD_MIN_VERSION, ZstdCompressor, ZstdDecompressor,
     open_zstd, zstd_library,
 )

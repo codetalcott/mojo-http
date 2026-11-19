@@ -16,7 +16,7 @@ writing channel i delivers to worker i's event loop, which drains it and
 hands it to `sse_peer_frame` — the same path a frame from any other worker
 takes. There is no separate local-delivery mechanism to keep in sync.
 
-Datagram layout, byte-for-byte `encode_bus_frame` (lightbug_http/broadcast.mojo):
+Datagram layout, byte-for-byte `encode_bus_frame` (m0_server/broadcast.mojo):
 
     bytes 0..7    event id, Int64 little-endian (-1 encodes as all-FF)
     bytes 8..9    channel length, UInt16 little-endian
@@ -107,7 +107,7 @@ MAX_CHANNEL = 65535
 # channel is routinely a room name or a POST field, and `%01` in a form body
 # decodes to a real control byte), so it is refused here. The Mojo side
 # spells the same rule `channel_is_reserved`, in
-# packages/m0-http/lightbug_http/broadcast.mojo.
+# packages/m0-http/m0_server/broadcast.mojo.
 CHANNEL_CONTROL_BYTE = b"\x01"
 
 NO_EVENT_ID = -1
@@ -138,7 +138,7 @@ CORE_LIB_ENV = "M0_CORE_LIB"
 PAGE_MAGIC = 0x6D30706167650001
 """`m0page` and a version byte, which the server writes into the page's slot 2.
 
-Spelled in `lightbug_http/accept_share.mojo` as `SHARED_PAGE_MAGIC`; the
+Spelled in `m0_server/accept_share.mojo` as `SHARED_PAGE_MAGIC`; the
 three copies must agree. A page without it is not numbered from."""
 
 PAGE_MAGIC_OFFSET = 16

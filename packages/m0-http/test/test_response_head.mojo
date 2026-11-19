@@ -23,16 +23,16 @@ The head's one `Server` line is held here too (SPEC A26).
 from std.ffi import c_int, external_call
 from std.testing import TestSuite, assert_equal, assert_false, assert_raises, assert_true
 
-from lightbug_http.c.fcntl import is_cloexec
-from lightbug_http.header import (
+from m0_server.c.fcntl import is_cloexec
+from m0_server.header import (
     Header, Headers, HeaderKey, KH_CONTENT_LENGTH, KH_CONTENT_TYPE, KH_TRANSFER_ENCODING,
 )
-from lightbug_http.http import (
+from m0_server.http import (
     HTTPResponse, enforce_bodiless_framing, is_bodiless_status, OK, BadRequest,
     NotFound, RequestTimeout, PayloadTooLarge, URITooLong, HeadersTooLarge,
     InternalError, NotImplemented,
 )
-from lightbug_http.io.bytes import Bytes
+from m0_server.io.bytes import Bytes
 
 
 def _seven() -> Bytes:

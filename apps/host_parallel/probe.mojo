@@ -25,7 +25,7 @@ spread over four -- big enough for the split to show and small enough to
 run eight at once inside a smoke's patience.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_host.host import HostContext, ViewState, ViewsApp, serve
 from m0_host.flags import host_config
 from m0_http import Views, reply

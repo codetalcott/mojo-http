@@ -61,7 +61,7 @@ Established by compiler probe, since none of this is in the pinned docs:
 
 The `sqlite3_module`, `sqlite3_vtab`, `sqlite3_vtab_cursor`, and
 `sqlite3_index_info` structs are all handled as flat word buffers rather than
-Mojo structs, following `lightbug_http/c/epoll.mojo` — a struct whose size is
+Mojo structs, following `m0_server/c/epoll.mojo` — a struct whose size is
 wrong by four bytes corrupts everything downstream in silence.
 
 ## Checking the offsets

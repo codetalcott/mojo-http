@@ -23,7 +23,8 @@ authors = [{ name = "Wm Talcott", email = "32972881+codetalcott@users.noreply.gi
 keywords = ["mojo", "http", "server", "htmx", "datastar", "sse"]
 
 # Plain MIT, unlike m0serve: no Mojo runtime rides in this wheel. The
-# lightbug_http fork is MIT too, and its LICENSE travels inside the tree.
+# lightbug_http fork, m0_server, is MIT too, and its LICENSE travels inside
+# the tree.
 license = "MIT"
 
 # Deliberately empty, and deliberately NOT `mojo==X`. The toolchain is

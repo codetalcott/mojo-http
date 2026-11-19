@@ -39,8 +39,8 @@ REPO = Path(__file__).resolve().parent.parent
 LEDGER = "docs/copies.json"
 SPEC = "docs/SPEC.md"
 
-SERVER_CONFIG = "packages/m0-http/lightbug_http/server_config.mojo"
-LOOP_STATE = "packages/m0-http/lightbug_http/loop/state.mojo"
+SERVER_CONFIG = "packages/m0-http/m0_server/server_config.mojo"
+LOOP_STATE = "packages/m0-http/m0_server/loop/state.mojo"
 CLI = "packages/m0-wsgi/src/cli.mojo"
 LIMITS = "packages/m0-http/src/limits.mojo"
 

@@ -12,10 +12,10 @@ takes now, and these tests are what hold it verbatim.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.cookie import Cookie, Duration, ResponseCookieJar, SameSite
-from lightbug_http.header import Header, Headers
-from lightbug_http.http import HTTPResponse
-from lightbug_http.io.bytes import Bytes
+from m0_server.cookie import Cookie, Duration, ResponseCookieJar, SameSite
+from m0_server.header import Header, Headers
+from m0_server.http import HTTPResponse
+from m0_server.io.bytes import Bytes
 
 # Byte for byte what Django 6 emits for a persistent session, including the
 # attribute order Python's `http.cookies` chooses and the capitalised `Lax`.

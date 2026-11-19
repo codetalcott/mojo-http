@@ -9,7 +9,7 @@ The measurement is in `docs/notes/wsgi-against-gunicorn-and-the-pool.md`: one
 subset of connections stopped dead rather than of general slowdown. Granian's
 `--blocking-threads`, which is this architecture, is flat under the same load.
 
-So the loop stops calling the handler. `lightbug_http.offload` is the queue;
+So the loop stops calling the handler. `m0_server.offload` is the queue;
 this file is the threads that drain it.
 
 **Each pool thread owns a whole handler**, built by `T.make(ctx)` on the
@@ -44,12 +44,12 @@ from std.python import Python
 from std.sys import stderr
 from std.time import perf_counter_ns
 
-from lightbug_http.offload import (
+from m0_server.offload import (
     OffloadPool, PoolJob, JOB_REQUEST, JOB_WS_MESSAGE, JOB_STOP, JOB_NONE,
     make_stream_ack_pair, drain_ack_fd, stream_gen_seed, WS_DATAGRAM_MAX,
 )
-from lightbug_http.http import HTTPResponse, Headers, Header, HeaderKey
-from lightbug_http.http.common_response import InternalError
+from m0_server.http import HTTPResponse, Headers, Header, HeaderKey
+from m0_server.http.common_response import InternalError
 
 from m0_http import (
     ThreadBlock, BLK_INDEX, BLK_USER, BLK_LANE, BLK_QOS,

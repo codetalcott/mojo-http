@@ -4,16 +4,16 @@ Datastar is bidirectional: the server patches signals down over SSE, and the
 browser sends the whole signal store back up on every action. This is that
 upward half — without it a Datastar app can render but never react.
 
-Depends on `lightbug_http`. Keep `consts.mojo` and `sse.mojo` free of that
+Depends on `m0_server`. Keep `consts.mojo` and `sse.mojo` free of that
 dependency so the wire format stays usable on its own.
 """
 
-# Import from the top-level package, not `lightbug_http.http`. Reaching
+# Import from the top-level package, not `m0_server.http`. Reaching
 # straight into the subpackage leaves the parent uninitialised: a bare
-# `from hashlib.hash import ...` that `lightbug_http/uri.mojo` once carried
+# `from hashlib.hash import ...` that `m0_server/uri.mojo` once carried
 # (gone since) then failed to resolve for anything consuming this module
 # through its .mojoc.
-from lightbug_http import HTTPRequest
+from m0_server import HTTPRequest
 
 
 comptime SIGNALS_QUERY_PARAM = "datastar"

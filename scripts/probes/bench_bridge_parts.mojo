@@ -17,9 +17,9 @@ installed but the stdlib, and it is a diagnostic, not a gate.
 from std.python import Python, PythonObject
 from std.time import perf_counter_ns
 
-from lightbug_http import HTTPRequest
-from lightbug_http.header import Headers, Header
-from lightbug_http.uri import URI
+from m0_server import HTTPRequest
+from m0_server.header import Headers, Header
+from m0_server.uri import URI
 
 from src.bridge import PyBridge
 from src.response import build_asgi_response, build_response

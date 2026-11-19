@@ -24,7 +24,7 @@ Two pieces the host runs for you (`uv run m0 doctor` prints the topology):
 Build it:  uv run m0 build      Test it:  uv run m0 test
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_host.flags import host_config
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 

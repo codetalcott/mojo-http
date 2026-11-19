@@ -46,16 +46,16 @@ file-backed page is required, which is all either host decides.
 from std.os import getenv, setenv
 from std.sys import stderr
 
-from lightbug_http.accept_share import (
+from m0_server.accept_share import (
     AcceptShare,
     SHARED_PAGE_MAGIC,
     SHARED_PAGE_MAGIC_SLOT,
     accept_share_slots,
     accept_sharing_wanted,
 )
-from lightbug_http.broadcast import BroadcastBus
-from lightbug_http.c.fcntl import set_cloexec
-from lightbug_http.c.process import fd_identity
+from m0_server.broadcast import BroadcastBus
+from m0_server.c.fcntl import set_cloexec
+from m0_server.c.process import fd_identity
 
 from .config import parse_env_int
 from .multiworker import SharedAtomics, int_list_env

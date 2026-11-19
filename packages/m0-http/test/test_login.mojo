@@ -13,11 +13,11 @@ session format itself is `test_session.mojo`'s.
 from std.os import setenv, unsetenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.cookie import RequestCookieJar
-from lightbug_http.header import Header, Headers
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI
+from m0_server.cookie import RequestCookieJar
+from m0_server.header import Header, Headers
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.io.bytes import Bytes
+from m0_server.uri import URI
 
 from src.form import form
 from src.login import (

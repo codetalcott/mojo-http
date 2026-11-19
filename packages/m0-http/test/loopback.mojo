@@ -14,14 +14,14 @@ those, and a test imports this as `test.loopback`.
 
 from std.ffi import c_int, external_call, get_errno
 
-from lightbug_http.address import NetworkType, TCPAddr
-from lightbug_http.c.address import AddressFamily
-from lightbug_http.c.network import SocketAddress, inet_pton, sockaddr, socklen_t
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.socket import SocketType, getsockname, socket
-from lightbug_http.c.socket_error import SysError
-from lightbug_http.connection import TCPConnection
-from lightbug_http.socket import Socket
+from m0_server.address import NetworkType, TCPAddr
+from m0_server.c.address import AddressFamily
+from m0_server.c.network import SocketAddress, inet_pton, sockaddr, socklen_t
+from m0_server.c.pipe import close_fd
+from m0_server.c.socket import SocketType, getsockname, socket
+from m0_server.c.socket_error import SysError
+from m0_server.connection import TCPConnection
+from m0_server.socket import Socket
 
 
 def _connect[

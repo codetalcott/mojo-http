@@ -225,7 +225,7 @@ optimising the HTTP layer buys nothing here.
   layer that is not the bottleneck.
 - **A SIMD timer wheel.** The loop already sweeps its slots once a second
   (1024 by default) with no heap; there is no timer cost to remove.
-- **SIMD request parsing.** Done: `lightbug_http/http/parsing.mojo`.
+- **SIMD request parsing.** Done: `m0_server/http/parsing.mojo`.
 - **Native Mojo coroutines replacing asyncio Tasks.** The application is
   Python; its awaits are asyncio's. Replacing the executor's task
   machinery would mean reimplementing asyncio, not avoiding it.

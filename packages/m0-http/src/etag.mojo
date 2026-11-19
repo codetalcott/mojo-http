@@ -4,7 +4,7 @@ Thin wrapper over m0-core's wyhash64 hashing. Produces weak ETags
 (W/"hex") suitable for conditional responses (304 Not Modified).
 """
 
-from lightbug_http.strings import next_list_member, trim_ows
+from m0_server.strings import next_list_member, trim_ows
 from m0_core.hashing import wyhash64, format_hash64
 
 

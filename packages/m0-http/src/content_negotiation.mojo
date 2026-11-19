@@ -10,8 +10,8 @@ Supports quality factors, case-insensitive media ranges, subtype wildcards
 specific ones regardless of the order they appear in the header.
 """
 
-from lightbug_http.header import ascii_lowercase, name_is
-from lightbug_http.strings import trim_ows
+from m0_server.header import ascii_lowercase, name_is
+from m0_server.strings import trim_ows
 
 
 struct AcceptResult(Copyable, Movable):

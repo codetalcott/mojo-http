@@ -64,7 +64,7 @@ go out verbatim. The id belongs on the LAST frame of a delta: a client
 that saw it saw all of them.
 """
 
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from m0_server.http import HTTPRequest, HTTPResponse
 
 from .reply import problem
 from .sse import SSERegistry, sse_response

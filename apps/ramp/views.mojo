@@ -44,8 +44,8 @@ the thread on purpose, for `smoke-mojo-mount` and the fairness probe).
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns
 
-from lightbug_http import HTTPRequest, HTTPResponse
-from lightbug_http.header import Header, HeaderKey, Headers
+from m0_server import HTTPRequest, HTTPResponse
+from m0_server.header import Header, HeaderKey, Headers
 from m0_host.host import HostContext, ViewState
 from m0_http import Html, Mount, Views, reply
 

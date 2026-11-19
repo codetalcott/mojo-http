@@ -45,7 +45,7 @@ _SIBLING = Path(sys.executable).with_name("mojo")
 MOJO = str(_SIBLING) if _SIBLING.exists() else (shutil.which("mojo") or "mojo")
 
 PROGRAM = """
-from lightbug_http.http import HTTPRequest, HTTPResponse
+from m0_server.http import HTTPRequest, HTTPResponse
 from m0_http import reply
 from m0_http.views import Views
 

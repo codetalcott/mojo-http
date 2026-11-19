@@ -12,7 +12,7 @@ arrived, and that the report's exit code is `host_refusal`'s verdict.
 from std.os import setenv, unsetenv
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http.http import HTTPRequest, HTTPResponse, OK
+from m0_server.http import HTTPRequest, HTTPResponse, OK
 from m0_host.flags import HostFlags, host_usage, parse_host_flags
 from m0_host.host import (
     AppHandler, HostContext, _set_notices, host_checks, host_refusal, host_report,

@@ -13,7 +13,7 @@ and compares what came back with the frozen table (SPEC B25). The entry file
 is not `server.mojo`, so `build-apps` skips it: the smoke compiles it on
 every pull request already.
 """
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server import Server, HTTPService, HTTPRequest, HTTPResponse, OK
 from m0_http import AppConfig, install_shutdown_signals
 
 

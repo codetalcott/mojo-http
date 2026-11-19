@@ -10,7 +10,7 @@ case folding, last-value-wins on duplicates, index shifting after a `pop`,
 and reading a value without materializing a String.
 """
 
-from lightbug_http.header import (
+from m0_server.header import (
     Headers,
     Header,
     HeaderKey,

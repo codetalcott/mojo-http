@@ -59,7 +59,7 @@ Run it:  uv run poe serve-sim
 from std.os import getenv
 from std.time import perf_counter_ns
 
-from lightbug_http import HTTPRequest, HTTPResponse, OK
+from m0_server import HTTPRequest, HTTPResponse, OK
 from m0_host.host import AppHandler, HostContext, Producer, Publisher, serve
 from m0_host.flags import host_config
 

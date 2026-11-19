@@ -123,7 +123,7 @@ GAP_MS = 500
 # request answered in 77 ms.
 SETTLE_S = 0.25
 LOOP = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "packages",
-                    "m0-http", "lightbug_http", "loop", "state.mojo")
+                    "m0-http", "m0_server", "loop", "state.mojo")
 
 
 # Which phase is running, for the crash handler: a traceback names the CALL

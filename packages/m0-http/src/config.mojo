@@ -57,8 +57,8 @@ wrote; `reply.param_int` (-1 when absent) for a request parameter.
 
 from std.os import getenv
 
-from lightbug_http.address import join_host_port
-from lightbug_http.server_config import ServerConfig
+from m0_server.address import join_host_port
+from m0_server.server_config import ServerConfig
 
 from .limits import connections_servable
 

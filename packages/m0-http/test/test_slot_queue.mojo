@@ -9,7 +9,7 @@ range ignored rather than trusted.
 
 from std.testing import TestSuite, assert_equal
 
-from lightbug_http.slot_queue import NO_SLOT, SlotQueues
+from m0_server.slot_queue import NO_SLOT, SlotQueues
 
 
 def _order(q: SlotQueues, queue: Int) -> List[Int]:

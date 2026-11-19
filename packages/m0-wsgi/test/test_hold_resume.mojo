@@ -16,10 +16,10 @@ from std.os import setenv
 from std.python import Python, PythonObject
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.broadcast import reserved_stream_url
-from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.http import HTTPRequest
-from lightbug_http.uri import URI
+from m0_server.broadcast import reserved_stream_url
+from m0_server.header import Headers, Header, HeaderKey
+from m0_server.http import HTTPRequest
+from m0_server.uri import URI
 from m0_http import SharedAtomics, StaticFiles, shared_store
 from m0_http.sse.format import format_sse_event_bytes
 

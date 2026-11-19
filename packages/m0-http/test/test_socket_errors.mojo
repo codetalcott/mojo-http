@@ -16,10 +16,10 @@ from std.ffi import ErrNo, c_int
 from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http.c.network import SocketAddress
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.platform import MSG_DONTWAIT
-from lightbug_http.c.socket import (
+from m0_server.c.network import SocketAddress
+from m0_server.c.pipe import close_fd
+from m0_server.c.platform import MSG_DONTWAIT
+from m0_server.c.socket import (
     SOL_SOCKET,
     ShutdownOption,
     SocketOption,
@@ -34,11 +34,11 @@ from lightbug_http.c.socket import (
     shutdown,
     socket,
 )
-from lightbug_http.c.socket_error import SysError
-from lightbug_http.c.socketpair import socketpair_dgram
-from lightbug_http.connection import ListenConfig
+from m0_server.c.socket_error import SysError
+from m0_server.c.socketpair import socketpair_dgram
+from m0_server.connection import ListenConfig
 from test.loopback import create_connection
-from lightbug_http.loop.accept import _accept_retries
+from m0_server.loop.accept import _accept_retries
 
 
 comptime AF_INET = 2

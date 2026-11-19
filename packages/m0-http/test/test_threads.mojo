@@ -27,8 +27,8 @@ from src.threads import (
     STATUS_OK,
     STATUS_NEVER_RAN,
 )
-from lightbug_http.c.pipe import create_shutdown_pipe, close_fd, ShutdownHandle
-from lightbug_http.c.process import exit_code, fork, process_exit, waitpid_blocking
+from m0_server.c.pipe import create_shutdown_pipe, close_fd, ShutdownHandle
+from m0_server.c.process import exit_code, fork, process_exit, waitpid_blocking
 
 
 comptime _RLIMIT_NPROC = 7 if CompilationTarget.is_macos() else 6

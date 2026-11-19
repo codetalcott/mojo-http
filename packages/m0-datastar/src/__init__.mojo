@@ -3,7 +3,7 @@
 Two layers. `consts` and `sse` are the pure wire format with no dependencies —
 usable on their own to generate Datastar frames for any transport. `stream` and
 `signals` connect that format to this framework's HTTP server, and are the only
-parts that depend on `m0_http` and `lightbug_http`.
+parts that depend on `m0_http` and `m0_server`.
 """
 
 from .consts import (

@@ -24,11 +24,11 @@ from std.os import getenv, setenv, unsetenv
 from std.sys.info import CompilationTarget
 from std.testing import TestSuite, assert_equal, assert_true
 
-from lightbug_http.c.pipe import close_fd
-from lightbug_http.c.socket import accept_with_peer, set_tcp_keepalive
-from lightbug_http.connection import ListenConfig
+from m0_server.c.pipe import close_fd
+from m0_server.c.socket import accept_with_peer, set_tcp_keepalive
+from m0_server.connection import ListenConfig
 from test.loopback import create_connection
-from lightbug_http.loop.state import (
+from m0_server.loop.state import (
     STREAM_KEEPALIVE_S,
     _stream_keepalive_from_env,
 )

@@ -24,7 +24,7 @@ from pathlib import Path
 
 from sabotage_lib import MojoRun, rule, run
 
-CHUNKED = Path("packages/m0-http/lightbug_http/http/chunked.mojo")
+CHUNKED = Path("packages/m0-http/m0_server/http/chunked.mojo")
 TEST = Path("packages/m0-http/test/test_parsing.mojo")
 
 # (label, old, new) — each reverts one load-bearing rule.

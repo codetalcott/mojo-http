@@ -15,16 +15,16 @@ from std.sys.info import CompilationTarget
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.http import HTTPResponse, OK
-from lightbug_http.http.request import HTTPRequest
-from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.socket import close, recv
-from lightbug_http.event_loop import _wait_for_events
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.offload import _admit_waiting, _hold_unsent, _service_completions
-from lightbug_http.loop.state import LoopState
-from lightbug_http.service import HTTPService
-from lightbug_http.offload import (
+from m0_server.http import HTTPResponse, OK
+from m0_server.http.request import HTTPRequest
+from m0_server.c.platform import MSG_DONTWAIT, PlatformBackend
+from m0_server.c.socket import close, recv
+from m0_server.event_loop import _wait_for_events
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.loop.offload import _admit_waiting, _hold_unsent, _service_completions
+from m0_server.loop.state import LoopState
+from m0_server.service import HTTPService
+from m0_server.offload import (
     JOB_STOP, JOB_REQUEST, JOB_NONE, JOB_WS_MESSAGE,
     OffloadPool, OffloadLoopState, OFFLOAD_MAX_INFLIGHT, NO_ENTRY, STREAM_GEN_NONE,
     EXECUTOR_MAX_INFLIGHT, executor_inflight, SUBMIT_RETRY_FIRST_NS, SUBMIT_RETRY_MAX_NS,
@@ -35,9 +35,9 @@ from lightbug_http.offload import (
     send_bounded, append_i64_le, read_i64_le, ACK_BYTES, ACK_DISCONNECT,
     encode_ack, decode_ack,
 )
-from lightbug_http.ring import atomic_at
-from lightbug_http.server_config import ServerConfig
-from lightbug_http.uri import URI
+from m0_server.ring import atomic_at
+from m0_server.server_config import ServerConfig
+from m0_server.uri import URI
 
 from src.threads import (
     ThreadSet, ThreadBlock, BLK_USER, BLK_STATUS, BLK_LANE, STATUS_OK,

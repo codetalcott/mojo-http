@@ -598,7 +598,7 @@ _TAG_JOB_BATCH = 4
 # Numbers the Mojo side owns, mirrored because this file cannot import
 # them; `render_shim.py --check` (in the docs gate) holds each equal to its
 # source, named beside it. The largest datagram a submit lane carries, and
-# so the read that takes one whole (`WS_DATAGRAM_MAX`, lightbug_http's
+# so the read that takes one whole (`WS_DATAGRAM_MAX`, m0_server's
 # offload.mojo):
 _WS_DATAGRAM_MAX = 65546
 # The header before an inbound WebSocket message's payload, tag, slot and
@@ -673,7 +673,7 @@ class _M0Broadcast:
         slot's stream, unsubscribe it, re-point it), and an application's
         channel name is routinely user input -- a `%01` in a form body
         decodes to a real control byte. `channel_is_reserved` in
-        `lightbug_http/broadcast.mojo` is the same predicate.'''
+        `m0_server/broadcast.mojo` is the same predicate.'''
         import os
         import struct
 

@@ -22,11 +22,11 @@ from std.sys.info import CompilationTarget
 from std.time import perf_counter_ns, sleep
 from std.os import getenv, setenv
 from std.sys import stderr
-from lightbug_http.accept_share import (
+from m0_server.accept_share import (
     AcceptShare, close_reaped_handoffs, mark_reaped,
 )
-from lightbug_http.c.fcntl import clear_cloexec
-from lightbug_http.c.process import (
+from m0_server.c.fcntl import clear_cloexec
+from m0_server.c.process import (
     fork, process_exit, getpid, waitpid_blocking, waitpid_nonblocking,
     kill_process, was_signaled, term_signal, exit_code,
     install_signal_handler, SIGTERM, SIGINT, SIGKILL,

@@ -14,7 +14,7 @@ Built on the producer thread, so this imports only `m0_datastar.sse` —
 the wire format, which depends on nothing — and the bus limit.
 """
 
-from lightbug_http.broadcast import BUS_MAX_FRAME
+from m0_server.broadcast import BUS_MAX_FRAME
 
 from m0_datastar.sse import patch_signals
 

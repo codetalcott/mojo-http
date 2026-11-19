@@ -16,7 +16,7 @@ from std.os import setenv
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
 from src.config import AppConfig, listen_host, parse_env_int, threads_conflict
-from lightbug_http.server_config import ServerConfig
+from m0_server.server_config import ServerConfig
 
 
 def _clear():

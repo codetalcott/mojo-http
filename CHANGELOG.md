@@ -27,6 +27,24 @@ default is listed under **Behaviour changes**
   `DatastarStream` or a `Feed`. There is no switch: it would only put the
   silent answer back. A handler of the application's own is unchanged.
   It reaches applications built with `m0` in its next release.
+### Changed
+
+- **The server package is `m0_server`, renamed from `lightbug_http`**
+  ([DECISIONS](docs/DECISIONS.md) D70). The hard fork of lightbug_http in
+  `packages/m0-http/`, and the package the `m0` wheel installs, no longer
+  take the name of the archived upstream, which still publishes a package
+  of its own under it. Breaking for a Mojo application, the `m0 new`
+  templates included: `from lightbug_http import ...` and every
+  `lightbug_http.<module>` become `m0_server`, with the same names and
+  submodules, and nothing else changes. One command makes the edit in an
+  application's tree, with GNU or BSD tools:
+
+  ```bash
+  grep -rl --include='*.mojo' lightbug_http . | xargs perl -pi -e 's/\blightbug_http\b/m0_server/g'
+  ```
+
+  m0serve's served contract is unchanged. lightbug_http's licence ships in
+  both wheels as before, as `LICENSE.lightbug_http.txt`.
 
 ## [1.18.0] — 2026-11-19
 

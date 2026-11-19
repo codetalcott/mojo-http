@@ -182,22 +182,22 @@ from std.sys.info import CompilationTarget
 from std.memory.alloc import unsafe_alloc
 from std.time import perf_counter_ns, sleep
 
-from lightbug_http.accept_share import AcceptShare
-from lightbug_http.address import NetworkType
-from lightbug_http.address import join_host_port, parse_address
-from lightbug_http.broadcast import BroadcastBus, publish_to_channels
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.process import (
+from m0_server.accept_share import AcceptShare
+from m0_server.address import NetworkType
+from m0_server.address import join_host_port, parse_address
+from m0_server.broadcast import BroadcastBus, publish_to_channels
+from m0_server.c.platform import PlatformBackend
+from m0_server.c.process import (
     DESCRIPTOR_HEADROOM, DESCRIPTORS_PER_CONNECTION, connections_within,
     getpid, process_exit, raise_descriptor_limit,
 )
-from lightbug_http.connection import ListenConfig
-from lightbug_http.event_loop import run_event_loop
-from lightbug_http.hold import HOLD_HEADER
-from lightbug_http.offload import OffloadPool
-from lightbug_http.server_config import ServerConfig, reclaim_from_env
-from lightbug_http.http import HTTPRequest, HTTPResponse, InternalError
-from lightbug_http.service import HTTPService
+from m0_server.connection import ListenConfig
+from m0_server.event_loop import run_event_loop
+from m0_server.hold import HOLD_HEADER
+from m0_server.offload import OffloadPool
+from m0_server.server_config import ServerConfig, reclaim_from_env
+from m0_server.http import HTTPRequest, HTTPResponse, InternalError
+from m0_server.service import HTTPService
 
 # Downward, through `m0_http.mojoc`: this package sits above both the fork
 # and `m0_http`, and neither imports it. See the module docstring.

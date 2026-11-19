@@ -35,8 +35,8 @@ Run it:  uv run poe serve-notes
 
 from std.os import getenv
 
-from lightbug_http import Server, HTTPService, HTTPRequest, HTTPResponse
-from lightbug_http.header import Headers, Header, HeaderKey
+from m0_server import Server, HTTPService, HTTPRequest, HTTPResponse
+from m0_server.header import Headers, Header, HeaderKey
 
 from m0_core.json_escape import escape_json_string
 from m0_core.html_escape import escape_html

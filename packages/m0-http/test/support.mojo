@@ -8,14 +8,14 @@ only when every copy is the same; a file whose variant differs keeps its own.
 from std.ffi import c_int, external_call, get_errno
 from std.memory.alloc import unsafe_alloc
 
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.http import HTTPResponse
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.http.common_response import InternalError
-from lightbug_http.loop.request import _drain_pipelined
-from lightbug_http.loop.response import _finish_response
-from lightbug_http.loop.state import LoopState, UNUSED
-from lightbug_http.service import HTTPService
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.http import HTTPResponse
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.http.common_response import InternalError
+from m0_server.loop.request import _drain_pipelined
+from m0_server.loop.response import _finish_response
+from m0_server.loop.state import LoopState, UNUSED
+from m0_server.service import HTTPService
 
 
 def _stream_pair() raises -> Tuple[Int, Int]:

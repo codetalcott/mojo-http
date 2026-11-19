@@ -34,7 +34,7 @@ the library is pinned for the life of the process.
 Three things about the implementation are deliberate:
 
   - **The C structs are flat word buffers, not Mojo structs.** Same reasoning as
-    `lightbug_http/c/epoll.mojo`: Mojo cannot vary a struct's fields by target,
+    `m0_server/c/epoll.mojo`: Mojo cannot vary a struct's fields by target,
     and a struct whose size is wrong by four bytes corrupts everything after the
     first row in silence. Every offset used here is asserted against the real
     headers by `test/verify_layout.c`, which `poe test-sqlite` runs — for the

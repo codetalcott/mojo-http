@@ -27,20 +27,20 @@ elsewhere raises nothing in the loop that closed its reference.
 
 from std.testing import TestSuite, assert_equal, assert_false, assert_true
 
-from lightbug_http import HTTPService, HTTPRequest, HTTPResponse, OK
-from lightbug_http.c.fcntl import F_GETFD, _fcntl
-from lightbug_http.c.kqueue import EVFILT_READ
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.platform import MSG_DONTWAIT, PlatformBackend
-from lightbug_http.c.socket import recv, send
-from lightbug_http.connection import ListenConfig
+from m0_server import HTTPService, HTTPRequest, HTTPResponse, OK
+from m0_server.c.fcntl import F_GETFD, _fcntl
+from m0_server.c.kqueue import EVFILT_READ
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.platform import MSG_DONTWAIT, PlatformBackend
+from m0_server.c.socket import recv, send
+from m0_server.connection import ListenConfig
 from test.loopback import create_connection
-from lightbug_http.event_loop import prepare_loop
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.loop.accept import _admit_connection
-from lightbug_http.loop.shutdown import _shutdown_begin, _shutdown_drain_step
-from lightbug_http.loop.state import LoopState, UNUSED, _close_slot
-from lightbug_http.server_config import ServerConfig
+from m0_server.event_loop import prepare_loop
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.loop.accept import _admit_connection
+from m0_server.loop.shutdown import _shutdown_begin, _shutdown_drain_step
+from m0_server.loop.state import LoopState, UNUSED, _close_slot
+from m0_server.server_config import ServerConfig
 
 from std.ffi import c_int, external_call, get_errno
 from test.support import _stream_pair

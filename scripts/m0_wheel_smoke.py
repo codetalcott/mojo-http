@@ -65,7 +65,7 @@ ROOT = Path(__file__).resolve().parents[1]
 TREES = {
     "packages/m0-core/src": "m0_core",
     "packages/m0-http/src": "m0_http",
-    "packages/m0-http/lightbug_http": "lightbug_http",
+    "packages/m0-http/m0_server": "m0_server",
     "packages/m0-http/m0_host": "m0_host",
     "packages/m0-datastar/src": "m0_datastar",
     "packages/m0-sqlite/src": "m0_sqlite",
@@ -161,7 +161,7 @@ def check_wheel(whl, pin, max_pin):
     if got != want:
         fail("m0/_mojo/ is not the mapped git ls-files set: missing %r, extra %r"
              % (sorted(want - got)[:5], sorted(got - want)[:5]))
-    if "m0/_mojo/lightbug_http/LICENSE" not in got:
+    if "m0/_mojo/m0_server/LICENSE" not in got:
         fail("the fork's LICENSE did not ride along")
     for n in sorted(got):
         rel = n[len("m0/_mojo/"):]

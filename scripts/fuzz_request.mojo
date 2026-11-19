@@ -69,7 +69,7 @@ Usage:
 
 from std.sys import argv
 
-from lightbug_http.framing import (
+from m0_server.framing import (
     BODY_CHUNKED,
     BODY_LENGTH,
     BODY_NONE,
@@ -86,15 +86,15 @@ from lightbug_http.framing import (
     REFUSED_URI_TOO_LONG,
     frame_request_head,
 )
-from lightbug_http.header import (
+from m0_server.header import (
     ParsedRequestHeaders,
     parse_request_headers,
     InvalidHTTPRequestError,
     IncompleteHTTPRequestError,
     UnsupportedHTTPRequestError,
 )
-from lightbug_http.http.chunked import HTTPChunkedDecoder
-from lightbug_http.io.bytes import Bytes
+from m0_server.http.chunked import HTTPChunkedDecoder
+from m0_server.io.bytes import Bytes
 
 
 # The limits the framing decision runs under here: small, so a mutated

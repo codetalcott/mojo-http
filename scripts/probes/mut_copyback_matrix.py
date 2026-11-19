@@ -478,7 +478,7 @@ def census(path: str) -> int:
           -I packages/m0-postgres/ -I packages/m0-wsgi/ \\
           -I packages/m0-wsgi/mount packages/m0-wsgi/m0serve.mojo -o m0serve.ll
     """
-    tree = ("lightbug_http::", "m0_http::", "m0_wsgi::", "m0_host::", "m0serve",
+    tree = ("m0_server::", "m0_http::", "m0_wsgi::", "m0_host::", "m0serve",
             "src::", "m0_core::", "m0_postgres::")
     total, ours = 0, {}
     for line in Path(path).read_text().splitlines():

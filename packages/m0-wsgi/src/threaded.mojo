@@ -66,13 +66,13 @@ from std.ffi import c_int
 from std.python import Python, PythonObject
 from std.sys import stderr
 
-from lightbug_http import HTTPService
-from lightbug_http.c.process import process_exit
-from lightbug_http.event_loop import run_event_loop
-from lightbug_http.event_loop_backend import EventLoopBackend
-from lightbug_http.offload import OffloadPool
-from lightbug_http.server_config import ServerConfig
-from lightbug_http.c.platform import PlatformBackend
+from m0_server import HTTPService
+from m0_server.c.process import process_exit
+from m0_server.event_loop import run_event_loop
+from m0_server.event_loop_backend import EventLoopBackend
+from m0_server.offload import OffloadPool
+from m0_server.server_config import ServerConfig
+from m0_server.c.platform import PlatformBackend
 from m0_http import request_qos_class, QOS_CLASS_USER_INTERACTIVE
 
 from .cli import EXIT_STARTUP, ServeOptions, serves_offloaded

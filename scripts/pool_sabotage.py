@@ -87,7 +87,7 @@ SABOTAGES = [
 RULES = [rule(label, POOL, old, new, only_on="Linux" if linux_only else "")
          for label, old, new, linux_only in SABOTAGES]
 
-OFFLOAD = Path("packages/m0-http/lightbug_http/offload.mojo")
+OFFLOAD = Path("packages/m0-http/m0_server/offload.mojo")
 OFFLOAD_TEST = Path("packages/m0-http/test/test_offload.mojo")
 
 # The job tables hold an entry per job in flight, not per slot (#657, SPEC
@@ -127,8 +127,8 @@ ENTRY_SABOTAGES = [
 RULES += [rule(label, OFFLOAD, old, new, gate="offload")
           for label, old, new in ENTRY_SABOTAGES]
 
-LOOP_OFFLOAD = Path("packages/m0-http/lightbug_http/loop/offload.mojo")
-EVENT_LOOP = Path("packages/m0-http/lightbug_http/event_loop.mojo")
+LOOP_OFFLOAD = Path("packages/m0-http/m0_server/loop/offload.mojo")
+EVENT_LOOP = Path("packages/m0-http/m0_server/event_loop.mojo")
 
 # A batch the executor's channel refused is put back with one rebuild of the
 # waiting queue and offered again only after a wait that doubles, or once a

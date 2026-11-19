@@ -76,7 +76,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 PROBE = "scripts/zero_alloca_probe.mojo"
-NETWORK = "packages/m0-http/lightbug_http/c/network.mojo"
+NETWORK = "packages/m0-http/m0_server/c/network.mojo"
 
 
 def _sibling(name: str) -> str:
@@ -366,7 +366,7 @@ def selftest() -> int:
         bad += not ok
         print(f"  {'ok  ' if ok else 'FAIL'}  {label}: {got} finding(s), expected {want}")
 
-    inet = ('lightbug_http::c::network::inet_pton[lightbug_http::c::address::'
+    inet = ('m0_server::c::network::inet_pton[m0_server::c::address::'
             'AddressFamily](::String$),address_family={}')
     good_probe = (_fn(inet.format(2), "  ret i32 0") + _fn(inet.format(24), "  ret i32 0")
                   + _fn(BARE, "  %3 = alloca {}, i64 4, align 1\n"
@@ -379,7 +379,7 @@ def selftest() -> int:
     judged = [
         ("the tree as it is", good_program, good_probe, 0, ""),
         ("m0serve's inet_pton put back", old_program, good_probe, 1,
-         "m0serve: a zero-size stack buffer in `lightbug_http::c::network::inet_pton"),
+         "m0serve: a zero-size stack buffer in `m0_server::c::network::inet_pton"),
         ("the bare arm mended", good_program,
          good_probe.replace("alloca {}, i64 4", "alloca i8, i64 4"), 1, "was NOT refused"),
         ("the bare arm deleted", good_program,
@@ -463,11 +463,11 @@ SABOTAGES = [
     ("inet_pton's IPv4 buffer is four c_voids again", NETWORK,
      "        ip_buffer = stack_allocation[4, UInt8]().unsafe_bitcast[c_void]()\n",
      "        ip_buffer = stack_allocation[4, c_void]()\n",
-     "zero-size stack buffer in `lightbug_http::c::network::inet_pton"),
+     "zero-size stack buffer in `m0_server::c::network::inet_pton"),
     ("inet_pton's IPv6 buffer is sixteen c_voids again", NETWORK,
      "        ip_buffer = stack_allocation[16, UInt8]().unsafe_bitcast[c_void]()\n",
      "        ip_buffer = stack_allocation[16, c_void]()\n",
-     "zero-size stack buffer in `lightbug_http::c::network::inet_pton"),
+     "zero-size stack buffer in `m0_server::c::network::inet_pton"),
     ("the bare arm is mended, so the probe agrees with itself", PROBE,
      "    var buffer = stack_allocation[4, c_void]()\n",
      "    var buffer = stack_allocation[4, UInt8]().unsafe_bitcast[c_void]()\n",

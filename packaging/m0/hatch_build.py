@@ -42,7 +42,7 @@ ROOT = Path(__file__).resolve().parents[2]
 TREES = {
     "packages/m0-core/src": "m0_core",
     "packages/m0-http/src": "m0_http",
-    "packages/m0-http/lightbug_http": "lightbug_http",
+    "packages/m0-http/m0_server": "m0_server",
     "packages/m0-http/m0_host": "m0_host",
     "packages/m0-datastar/src": "m0_datastar",
     "packages/m0-sqlite/src": "m0_sqlite",

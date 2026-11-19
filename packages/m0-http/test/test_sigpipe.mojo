@@ -16,13 +16,13 @@ failure, fails either way. `smoke-host` holds the same on a built binary.
 from std.ffi import c_int, c_uint, external_call, get_errno
 from std.testing import assert_equal, assert_true, TestSuite
 
-from lightbug_http import HTTPRequest, HTTPResponse, HTTPService, OK
-from lightbug_http.c.pipe import close_fd, create_shutdown_pipe
-from lightbug_http.c.process import (
+from m0_server import HTTPRequest, HTTPResponse, HTTPService, OK
+from m0_server.c.pipe import close_fd, create_shutdown_pipe
+from m0_server.c.process import (
     SIG_DFL, SIG_IGN, SIGPIPE, _raw_signal, getpid, ignore_sigpipe, kill_process,
 )
-from lightbug_http.connection import ListenConfig
-from lightbug_http.server import Server
+from m0_server.connection import ListenConfig
+from m0_server.server import Server
 
 
 comptime WATCHDOG_S = 30

@@ -1,8 +1,8 @@
 """Tests for m0-http cors module."""
 
 from m0_http.cors import CorsConfig, apply_cors_headers
-from lightbug_http import HTTPResponse, HeaderKey
-from lightbug_http.io.bytes import Bytes
+from m0_server import HTTPResponse, HeaderKey
+from m0_server.io.bytes import Bytes
 from std.testing import assert_equal, assert_true, TestSuite
 
 

@@ -14,7 +14,7 @@ missing from a list answered by another.
 There is no middleware and no decorator: a guard is an early return.
 """
 
-from lightbug_http import HTTPRequest, HTTPResponse
+from m0_server import HTTPRequest, HTTPResponse
 from m0_host.host import HostContext, ViewState
 
 from m0_http import Views, form, page_or_fragment, reply

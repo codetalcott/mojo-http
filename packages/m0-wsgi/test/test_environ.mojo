@@ -8,7 +8,7 @@ where the environ dict is actually built.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.header import Headers
+from m0_server.header import Headers
 
 from src.environ import (
     all_ascii,

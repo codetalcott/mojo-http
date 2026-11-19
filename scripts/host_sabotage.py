@@ -100,14 +100,14 @@ PARALLEL = "parallel"
 RAMP = "ramp"
 
 HOST = Path("packages/m0-http/m0_host/host.mojo")
-LOOP_SHUTDOWN = Path("packages/m0-http/lightbug_http/loop/shutdown.mojo")
+LOOP_SHUTDOWN = Path("packages/m0-http/m0_server/loop/shutdown.mojo")
 VIEWS_SRC = Path("packages/m0-http/src/views.mojo")
 HOST_CHECK = Path("apps/host_check/server.mojo")
 FLAGS_SRC = Path("packages/m0-http/m0_host/flags.mojo")
 CMDLINE_SRC = Path("packages/m0-http/src/cmdline.mojo")
 CONFIG_SRC = Path("packages/m0-http/src/config.mojo")
 PREFORK_SRC = Path("packages/m0-http/src/prefork.mojo")
-ACCEPT_SHARE_SRC = Path("packages/m0-http/lightbug_http/accept_share.mojo")
+ACCEPT_SHARE_SRC = Path("packages/m0-http/m0_server/accept_share.mojo")
 MULTIWORKER_SRC = Path("packages/m0-http/src/multiworker.mojo")
 
 # (label, gate, path, old, new); `old` and `new` may be tuples of the same

@@ -30,8 +30,8 @@ channel exists before the first producer does; and the join is detached
 from std.python import Python
 from std.sys import stderr
 
-from lightbug_http.c.process import process_exit
-from lightbug_http.offload import OffloadPool
+from m0_server.c.process import process_exit
+from m0_server.offload import OffloadPool
 from m0_http import MojoPool
 
 from .asgi_executor import AsgiExecutor, READY_STOPPED

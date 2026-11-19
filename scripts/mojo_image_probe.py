@@ -394,7 +394,7 @@ def probe(args, tag, arch):
             fail(f"an interpreter is in the image: {found}")
 
         phase("libzstd resolves in the image")
-        # The plain name is the first the loader tries (lightbug_http.c.zstd),
+        # The plain name is the first the loader tries (m0_server.c.zstd),
         # so the cache's entry is the one opened; the file must be there too,
         # since a cache can outlive what it names.
         zstd_lib = root_sh(

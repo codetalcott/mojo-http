@@ -9,11 +9,11 @@ the second one silently disabled every Django session, login and CSRF check.
 
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
-from lightbug_http.cookie import RequestCookieJar
-from lightbug_http.header import HeaderKey, parse_request_headers
-from lightbug_http.http import HTTPRequest
-from lightbug_http.io.bytes import Bytes
-from lightbug_http.uri import URI
+from m0_server.cookie import RequestCookieJar
+from m0_server.header import HeaderKey, parse_request_headers
+from m0_server.http import HTTPRequest
+from m0_server.io.bytes import Bytes
+from m0_server.uri import URI
 from test.support import _raw
 
 

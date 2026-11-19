@@ -146,7 +146,7 @@ what a `views`, `board` or `live` application adds the day it needs one.
   hand one visitor's page to another.
 - **A hand-built request parses no `Cookie` header**; only the server's
   parser fills `req.cookies`. A test of a view behind a session fills the
-  jar itself: `var jar = RequestCookieJar()` (from `lightbug_http.cookie`),
+  jar itself: `var jar = RequestCookieJar()` (from `m0_server.cookie`),
   `jar.add_pairs("name=value")`, then `HTTPRequest(uri, headers=…,
   cookies=jar^)`. Without it every such test is answered as signed out.
   The `auth` template's test signs in through the table and does this.

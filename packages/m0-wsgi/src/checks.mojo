@@ -37,9 +37,9 @@ from std.os.path import isdir
 from std.sys import stderr
 from std.sys.info import CompilationTarget
 
-from lightbug_http.address import NetworkType, join_host_port, parse_address
-from lightbug_http.c.process import DESCRIPTOR_MARGIN, process_exit
-from lightbug_http.server_config import ServerConfig
+from m0_server.address import NetworkType, join_host_port, parse_address
+from m0_server.c.process import DESCRIPTOR_MARGIN, process_exit
+from m0_server.server_config import ServerConfig
 from m0_http import GRANT_KEY_ENV, threads_conflict
 from m0_http.parallel_runtime import parallel_runtime_linked
 

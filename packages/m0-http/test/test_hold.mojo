@@ -1,7 +1,7 @@
 """Tests for hold detection and the WebSocket message seam.
 
 In m0-http's test tree because the module is in the fork
-(`lightbug_http/hold.mojo`), shared by the WSGI handler and the Mojo pool.
+(`m0_server/hold.mojo`), shared by the WSGI handler and the Mojo pool.
 
 Deliberately no interpreter here, same charter as `test_environ`: every
 function under test operates on already-built `HTTPRequest`/`HTTPResponse`
@@ -12,10 +12,10 @@ reachable here is what the handler does with the answer — performing the
 
 from std.testing import assert_equal, assert_false, assert_true, TestSuite
 
-from lightbug_http import Header, Headers, HTTPRequest, HTTPResponse
-from lightbug_http.uri import URI
+from m0_server import Header, Headers, HTTPRequest, HTTPResponse
+from m0_server.uri import URI
 
-from lightbug_http.hold import (
+from m0_server.hold import (
     take_hold,
     take_stream_hold,
     request_last_event_id,

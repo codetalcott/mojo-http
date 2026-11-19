@@ -35,7 +35,7 @@
  *
  * Add a triple there rather than trusting that "64-bit is 64-bit": this repo
  * has already shipped a struct layout that was right on x86-64 and silently
- * corrupted every event on aarch64 (lightbug_http/c/epoll.mojo:48-70).
+ * corrupted every event on aarch64 (m0_server/c/epoll.mojo:48-70).
  */
 
 #include <stddef.h>

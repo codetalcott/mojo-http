@@ -122,7 +122,7 @@ slots, the `sqlite3_index_info` word indices, the 12-byte
 `sqlite3_index_constraint`, the 8-byte `sqlite3_index_constraint_usage`, and the
 one-word `sqlite3_vtab_cursor`. That is the expected outcome (all the fields are
 naturally aligned and LP64 is LP64), but it is the kind of thing this repo has
-been burned assuming: `lightbug_http/c/epoll.mojo:48-70` documents a layout that
+been burned assuming: `m0_server/c/epoll.mojo:48-70` documents a layout that
 was right on x86-64 and silently corrupted every event on aarch64.
 
 Two controls establish the check is not vacuous. The i386 build fails on the

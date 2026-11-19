@@ -41,16 +41,16 @@ from std.time import sleep
 
 from std.collections import Optional
 
-from lightbug_http.accept_share import AcceptShare
-from lightbug_http.broadcast import encode_bus_frame
-from lightbug_http.c.fcntl import set_nonblocking
-from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.http import HTTPResponse
-from lightbug_http.http.common_response import InternalError
-from lightbug_http.offload import (
+from m0_server.accept_share import AcceptShare
+from m0_server.broadcast import encode_bus_frame
+from m0_server.c.fcntl import set_nonblocking
+from m0_server.header import Headers, Header, HeaderKey
+from m0_server.http import HTTPResponse
+from m0_server.http.common_response import InternalError
+from m0_server.offload import (
     OffloadPool, stream_gen_seed, COMPLETE_BATCH_MAX, ns_left, stop_deadline,
 )
-from lightbug_http.event_loop import (
+from m0_server.event_loop import (
     LoopState,
     prepare_loop,
     run_pass_once,
@@ -61,15 +61,15 @@ from lightbug_http.event_loop import (
     _shutdown_drain_step,
     _shutdown_finish,
 )
-from lightbug_http.server_config import ServerConfig
-from lightbug_http.event_loop_backend import EventLoopBackend
+from m0_server.server_config import ServerConfig
+from m0_server.event_loop_backend import EventLoopBackend
 from std.io import RawFileDescriptor
-from lightbug_http.websocket import (
+from m0_server.websocket import (
     websocket_upgrade, encode_ws_frame,
     WS_OP_TEXT, WS_OP_BINARY,
 )
-from lightbug_http.c.platform import PlatformBackend
-from lightbug_http.c.process import process_exit
+from m0_server.c.platform import PlatformBackend
+from m0_server.c.process import process_exit
 from m0_http import BLK_QOS, request_qos_class, QOS_CLASS_USER_INITIATED
 
 from m0_http.sse.format import NO_EVENT_ID

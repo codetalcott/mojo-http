@@ -5,9 +5,9 @@ are the easy ones to forget: without `Cache-Control: no-cache` an intermediary
 may buffer or replay the stream, and nginx buffers it by default regardless.
 """
 
-from lightbug_http.header import Headers, Header, HeaderKey
-from lightbug_http.http import HTTPRequest, HTTPResponse
-from lightbug_http.strings import next_list_member, trim_ows
+from m0_server.header import Headers, Header, HeaderKey
+from m0_server.http import HTTPRequest, HTTPResponse
+from m0_server.strings import next_list_member, trim_ows
 
 from ..reply import vary
 
