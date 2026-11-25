@@ -1,0 +1,105 @@
+# tailite run 1 2026-11-25T17:02:50Z; tailite 0078c6c (v0.1.0) built --release --locked, rustc 1.90.0; Apple M4, macOS 27.2.1
+sqlite (writer) 3.50.4 python 3.13.7 tailite extra args: []
+tailite stderr: ['tailite: following <work-dir>/tl.db']
+event                                            truth                  tailite                missed     extra / other tables
+1 update (control)                               [1]                    [1]                    []         [] ['m0_changes:update', 'm0_stamp:update']
+2 insert into another table                      []                     []                     []         [] []
+3 update storing the same title                  []                     []                     []         [] ['m0_changes:update', 'm0_stamp:update']
+4 triggers dropped                               []                     []                     []         [] []
+5 update after the drop                          [3]                    [3]                    []         [] []
+5b watch restored                                []                     []                     []         [] []
+6 migration rebuild, then an update              [4]                    [4]                    []         [] ['sqlite_sequence:delete', 'sqlite_sequence:insert']
+6b watch restored                                []                     []                     []         [] []
+7 REPLACE through slug, no recursive_triggers    [5, 201]               [5, 201]               []         [] ['m0_changes:insert', 'm0_stamp:update', 'sqlite_sequence:update']
+8 update with triggers disabled (DBCONFIG)       [6]                    [6]                    []         [] []
+9 title rewritten by blob I/O                    [7]                    [7]                    []         [] []
+10a backup at h, then three updates              [8, 9, 10]             [8, 9, 10]             []         [] ['m0_changes:update', 'm0_stamp:update']
+10 backup restored, three other updates          [8, 9, 10, 11, 12, 13] [8, 9, 10, 11, 12, 13] []         [] ['m0_changes:update', 'm0_stamp:update']
+11 VACUUM                                        []                     []                     []         [] ['sqlite_sequence:delete', 'sqlite_sequence:insert']
+12 folder deleted, cascading to notes            [15, 25, 35, 45, 55, 6 [15, 25, 35, 45, 55, 6 []         [] ['folders:delete', 'm0_changes:update', 'm0_stamp:update']
+13 checkpoint TRUNCATE, then an update           [16]                   [16]                   []         [] ['m0_changes:update', 'm0_stamp:update']
+14 300 inserts                                   [202, 203, 204, 205, 2 [202, 203, 204, 205, 2 []         [] ['m0_changes:insert', 'm0_stamp:update', 'sqlite_sequence:update']
+15 stamp counter bumped by hand                  []                     []                     []         [] ['m0_stamp:update']
+16 update (control)                              [17]                   [17]                   []         [] ['m0_changes:update', 'm0_stamp:update']
+events with a missed row (or no marker): []
+latency ms over 200 commits: median=24.8 p90=25.5 max=26.4 (interval 20 ms)
+tailite CPU time over the run: 0:00.17
+verdict: A (no event missed a row)
+# run 2
+sqlite (writer) 3.50.4 python 3.13.7 tailite extra args: []
+tailite stderr: ['tailite: following <work-dir>/tl.db']
+event                                            truth                  tailite                missed     extra / other tables
+1 update (control)                               [1]                    [1]                    []         [] ['m0_changes:update', 'm0_stamp:update']
+2 insert into another table                      []                     []                     []         [] []
+3 update storing the same title                  []                     []                     []         [] ['m0_changes:update', 'm0_stamp:update']
+4 triggers dropped                               []                     []                     []         [] []
+5 update after the drop                          [3]                    [3]                    []         [] []
+5b watch restored                                []                     []                     []         [] []
+6 migration rebuild, then an update              [4]                    [4]                    []         [] ['sqlite_sequence:delete', 'sqlite_sequence:insert']
+6b watch restored                                []                     []                     []         [] []
+7 REPLACE through slug, no recursive_triggers    [5, 201]               [5, 201]               []         [] ['m0_changes:insert', 'm0_stamp:update', 'sqlite_sequence:update']
+8 update with triggers disabled (DBCONFIG)       [6]                    [6]                    []         [] []
+9 title rewritten by blob I/O                    [7]                    [7]                    []         [] []
+10a backup at h, then three updates              [8, 9, 10]             [8, 9, 10]             []         [] ['m0_changes:update', 'm0_stamp:update']
+10 backup restored, three other updates          [8, 9, 10, 11, 12, 13] [8, 9, 10, 11, 12, 13] []         [] ['m0_changes:update', 'm0_stamp:update']
+11 VACUUM                                        []                     []                     []         [] ['sqlite_sequence:delete', 'sqlite_sequence:insert']
+12 folder deleted, cascading to notes            [15, 25, 35, 45, 55, 6 [15, 25, 35, 45, 55, 6 []         [] ['folders:delete', 'm0_changes:update', 'm0_stamp:update']
+13 checkpoint TRUNCATE, then an update           [16]                   [16]                   []         [] ['m0_changes:update', 'm0_stamp:update']
+14 300 inserts                                   [202, 203, 204, 205, 2 [202, 203, 204, 205, 2 []         [] ['m0_changes:insert', 'm0_stamp:update', 'sqlite_sequence:update']
+15 stamp counter bumped by hand                  []                     []                     []         [] ['m0_stamp:update']
+16 update (control)                              [17]                   [17]                   []         [] ['m0_changes:update', 'm0_stamp:update']
+events with a missed row (or no marker): []
+latency ms over 200 commits: median=24.8 p90=25.5 max=29.5 (interval 20 ms)
+tailite CPU time over the run: 0:00.16
+verdict: A (no event missed a row)
+# sabotage: tailite --table other
+(the first sabotage attempt hung in the latency loop, 5 s per commit, and was stopped; rerun with SKIP_LATENCY=1)
+sqlite (writer) 3.50.4 python 3.13.7 tailite extra args: ['--table', 'other']
+tailite stderr: ['tailite: following <work-dir>/tl.db']
+event                                            truth                  tailite                missed     extra / other tables
+1 update (control)                               [1]                    []                     [1]        [] []
+2 insert into another table                      []                     []                     []         [] []
+3 update storing the same title                  []                     []                     []         [] []
+4 triggers dropped                               []                     []                     []         [] []
+5 update after the drop                          [3]                    []                     [3]        [] []
+5b watch restored                                []                     []                     []         [] []
+6 migration rebuild, then an update              [4]                    []                     [4]        [] []
+6b watch restored                                []                     []                     []         [] []
+7 REPLACE through slug, no recursive_triggers    [5, 201]               []                     [5, 201]   [] []
+8 update with triggers disabled (DBCONFIG)       [6]                    []                     [6]        [] []
+9 title rewritten by blob I/O                    [7]                    []                     [7]        [] []
+10a backup at h, then three updates              [8, 9, 10]             []                     [8, 9, 10] [] []
+10 backup restored, three other updates          [8, 9, 10, 11, 12, 13] []                     [8, 9, 10, 11, 12, 13] [] []
+11 VACUUM                                        []                     []                     []         [] []
+12 folder deleted, cascading to notes            [15, 25, 35, 45, 55, 6 []                     [15, 25, 35, 45, 55, 65, 75, 85, 95, 105, 115, 125, 135, 145, 155, 165, 175, 185, 195] [] []
+13 checkpoint TRUNCATE, then an update           [16]                   []                     [16]       [] []
+14 300 inserts                                   [202, 203, 204, 205, 2 []                     [202, 203, 204, 205, 206, 207, 208, 209, 210, 211, 212, 213, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224, 225, 226, 227, 228, 229, 230, 231, 232, 233, 234, 235, 236, 237, 238, 239, 240, 241, 242, 243, 244, 245, 246, 247, 248, 249, 250, 251, 252, 253, 254, 255, 256, 257, 258, 259, 260, 261, 262, 263, 264, 265, 266, 267, 268, 269, 270, 271, 272, 273, 274, 275, 276, 277, 278, 279, 280, 281, 282, 283, 284, 285, 286, 287, 288, 289, 290, 291, 292, 293, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304, 305, 306, 307, 308, 309, 310, 311, 312, 313, 314, 315, 316, 317, 318, 319, 320, 321, 322, 323, 324, 325, 326, 327, 328, 329, 330, 331, 332, 333, 334, 335, 336, 337, 338, 339, 340, 341, 342, 343, 344, 345, 346, 347, 348, 349, 350, 351, 352, 353, 354, 355, 356, 357, 358, 359, 360, 361, 362, 363, 364, 365, 366, 367, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377, 378, 379, 380, 381, 382, 383, 384, 385, 386, 387, 388, 389, 390, 391, 392, 393, 394, 395, 396, 397, 398, 399, 400, 401, 402, 403, 404, 405, 406, 407, 408, 409, 410, 411, 412, 413, 414, 415, 416, 417, 418, 419, 420, 421, 422, 423, 424, 425, 426, 427, 428, 429, 430, 431, 432, 433, 434, 435, 436, 437, 438, 439, 440, 441, 442, 443, 444, 445, 446, 447, 448, 449, 450, 451, 452, 453, 454, 455, 456, 457, 458, 459, 460, 461, 462, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 473, 474, 475, 476, 477, 478, 479, 480, 481, 482, 483, 484, 485, 486, 487, 488, 489, 490, 491, 492, 493, 494, 495, 496, 497, 498, 499, 500, 501] [] []
+15 stamp counter bumped by hand                  []                     []                     []         [] []
+16 update (control)                              [17]                   []                     [17]       [] []
+events with a missed row (or no marker): ['1', '5', '6', '7', '8', '9', '10a', '10', '12', '13', '14', '16']
+tailite CPU time over the run: 0:00.05
+verdict: C
+# tailite's own suite (cargo test --release --locked; the lines captured)
+test tests::json_escapes_and_types ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+test usage_errors ... ok
+test diff_human_and_json ... ok
+test result: ok. 2 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.06s
+test refuses_rollback_journal_databases ... ok
+test basic_insert_update_delete ... ok
+test generated_columns_and_affinity ... ok
+test schema_changes_are_followed ... ok
+test utf16_database ... ok
+test rolled_back_and_uncommitted_work_is_invisible ... ok
+test without_rowid_composite_key ... ok
+test snapshot_then_stream_is_complete ... ok
+test diff_two_files ... ok
+test concurrent_writer_with_checkpoint_pressure ... ok
+test random_workload_small_pages ... ok
+test random_workload_auto_vacuum has been running for over 60 seconds
+test random_workload_default_pages has been running for over 60 seconds
+test random_workload_auto_vacuum ... ok
+test random_workload_default_pages ... ok
+test result: ok. 13 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 73.28s
+test src/lib.rs - (line 8) - compile ... ok
+test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.02s

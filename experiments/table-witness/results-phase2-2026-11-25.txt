@@ -1,0 +1,84 @@
+# phase 2 run 1 2026-11-25T16:44:50Z; Apple M4, macOS 27.2.1, Mojo 1.2.0, -O3, mojo-http 31fb5841, file DB in WAL, VACUUM after load, 4 KB pages
+hot burst: writes update/delete/insert=802/95/103  counts before=[D2k kept=0 D3k kept=0 remaps=1 frames read=0] after=[D2k kept=0 D3k kept=0 remaps=8 frames read=4331]
+hot burst W us median=77.0 p90=82.0 pages differing from W=0
+hot burst Rk us median=22.0 p90=24.0 pages differing from W=0
+hot burst Ck us median=22.0 p90=24.0 pages differing from W=0
+hot burst D2k us median=22.0 p90=24.0 pages differing from W=0
+hot burst D3k us median=24.0 p90=26.0 pages differing from W=0
+hot burst ratios: D3k/Ck=1.0909090909090908 D2k/Ck=1.0 W/D3k=3.2083333333333335
+hot other-table W us median=78.0 p90=79.0 pages differing from W=0
+hot other-table Rk us median=5.0 p90=5.0 pages differing from W=0
+hot other-table Ck us median=21.0 p90=22.0 pages differing from W=0
+hot other-table D2k us median=5.0 p90=6.0 pages differing from W=0
+hot other-table D3k us median=3.0 p90=4.0 pages differing from W=0
+hot other-table counts before=[D2k kept=0 D3k kept=0 remaps=8 frames read=4331] after=[D2k kept=100 D3k kept=100 remaps=8 frames read=4431]
+hot other-table ratios: D3k/Rk=0.6 D2k/Rk=1.0 W/D3k=26.0
+hot bypass check (triggers dropped, then a title updated): W=fresh Rk=STALE Ck=fresh D2k=fresh D3k=fresh
+gate=PASS sabotage=
+uniform burst: writes update/delete/insert=802/95/103  counts before=[D2k kept=0 D3k kept=0 remaps=1 frames read=0] after=[D2k kept=0 D3k kept=0 remaps=23 frames read=5103]
+uniform burst W us median=76.0 p90=79.0 pages differing from W=0
+uniform burst Rk us median=21.0 p90=23.0 pages differing from W=0
+uniform burst Ck us median=20.0 p90=22.0 pages differing from W=0
+uniform burst D2k us median=21.0 p90=22.0 pages differing from W=0
+uniform burst D3k us median=22.0 p90=24.0 pages differing from W=0
+uniform burst ratios: D3k/Ck=1.1 D2k/Ck=1.05 W/D3k=3.4545454545454546
+uniform other-table W us median=68.0 p90=76.0 pages differing from W=0
+uniform other-table Rk us median=4.0 p90=5.0 pages differing from W=0
+uniform other-table Ck us median=18.0 p90=21.0 pages differing from W=0
+uniform other-table D2k us median=4.0 p90=5.0 pages differing from W=0
+uniform other-table D3k us median=3.0 p90=4.0 pages differing from W=0
+uniform other-table counts before=[D2k kept=0 D3k kept=0 remaps=23 frames read=5103] after=[D2k kept=100 D3k kept=100 remaps=23 frames read=5203]
+uniform other-table ratios: D3k/Rk=0.75 D2k/Rk=1.0 W/D3k=22.666666666666668
+uniform bypass check (triggers dropped, then a title updated): W=fresh Rk=STALE Ck=fresh D2k=fresh D3k=fresh
+gate=PASS sabotage=
+# phase 2 run 2 2026-11-25T16:44:51Z; Apple M4, macOS 27.2.1, Mojo 1.2.0, -O3, mojo-http 31fb5841, file DB in WAL, VACUUM after load, 4 KB pages
+hot burst: writes update/delete/insert=802/95/103  counts before=[D2k kept=0 D3k kept=0 remaps=1 frames read=0] after=[D2k kept=0 D3k kept=0 remaps=8 frames read=4331]
+hot burst W us median=74.0 p90=79.0 pages differing from W=0
+hot burst Rk us median=22.0 p90=24.0 pages differing from W=0
+hot burst Ck us median=21.0 p90=24.0 pages differing from W=0
+hot burst D2k us median=22.0 p90=24.0 pages differing from W=0
+hot burst D3k us median=23.0 p90=25.0 pages differing from W=0
+hot burst ratios: D3k/Ck=1.0952380952380953 D2k/Ck=1.0476190476190477 W/D3k=3.217391304347826
+hot other-table W us median=77.0 p90=81.0 pages differing from W=0
+hot other-table Rk us median=5.0 p90=6.0 pages differing from W=0
+hot other-table Ck us median=21.0 p90=22.0 pages differing from W=0
+hot other-table D2k us median=5.0 p90=6.0 pages differing from W=0
+hot other-table D3k us median=3.0 p90=4.0 pages differing from W=0
+hot other-table counts before=[D2k kept=0 D3k kept=0 remaps=8 frames read=4331] after=[D2k kept=100 D3k kept=100 remaps=8 frames read=4431]
+hot other-table ratios: D3k/Rk=0.6 D2k/Rk=1.0 W/D3k=25.666666666666668
+hot bypass check (triggers dropped, then a title updated): W=fresh Rk=STALE Ck=fresh D2k=fresh D3k=fresh
+gate=PASS sabotage=
+uniform burst: writes update/delete/insert=802/95/103  counts before=[D2k kept=0 D3k kept=0 remaps=1 frames read=0] after=[D2k kept=0 D3k kept=0 remaps=23 frames read=5103]
+uniform burst W us median=73.0 p90=80.0 pages differing from W=0
+uniform burst Rk us median=20.0 p90=22.0 pages differing from W=0
+uniform burst Ck us median=19.0 p90=21.0 pages differing from W=0
+uniform burst D2k us median=20.0 p90=22.0 pages differing from W=0
+uniform burst D3k us median=21.0 p90=24.0 pages differing from W=0
+uniform burst ratios: D3k/Ck=1.105263157894737 D2k/Ck=1.0526315789473684 W/D3k=3.4761904761904763
+uniform other-table W us median=72.0 p90=78.0 pages differing from W=0
+uniform other-table Rk us median=4.0 p90=5.0 pages differing from W=0
+uniform other-table Ck us median=19.0 p90=21.0 pages differing from W=0
+uniform other-table D2k us median=4.0 p90=5.0 pages differing from W=0
+uniform other-table D3k us median=3.0 p90=4.0 pages differing from W=0
+uniform other-table counts before=[D2k kept=0 D3k kept=0 remaps=23 frames read=5103] after=[D2k kept=100 D3k kept=100 remaps=23 frames read=5203]
+uniform other-table ratios: D3k/Rk=0.75 D2k/Rk=1.0 W/D3k=24.0
+uniform bypass check (triggers dropped, then a title updated): W=fresh Rk=STALE Ck=fresh D2k=fresh D3k=fresh
+gate=PASS sabotage=
+# sabotage
+  D3k first differs after write 0
+hot burst: writes update/delete/insert=802/95/103  counts before=[D2k kept=0 D3k kept=0 remaps=1 frames read=0] after=[D2k kept=0 D3k kept=993 remaps=8 frames read=4331]
+hot burst W us median=72.0 p90=78.0 pages differing from W=0
+hot burst Rk us median=20.0 p90=22.0 pages differing from W=0
+hot burst Ck us median=20.0 p90=22.0 pages differing from W=0
+hot burst D2k us median=20.0 p90=22.0 pages differing from W=0
+hot burst D3k us median=4.0 p90=5.0 pages differing from W=993
+hot burst ratios: D3k/Ck=0.2 D2k/Ck=1.0 W/D3k=18.0
+hot other-table W us median=73.0 p90=80.0 pages differing from W=0
+hot other-table Rk us median=4.0 p90=5.0 pages differing from W=0
+hot other-table Ck us median=19.0 p90=20.0 pages differing from W=0
+hot other-table D2k us median=5.0 p90=5.0 pages differing from W=0
+hot other-table D3k us median=3.0 p90=3.0 pages differing from W=100
+hot other-table counts before=[D2k kept=0 D3k kept=993 remaps=8 frames read=4331] after=[D2k kept=100 D3k kept=1093 remaps=8 frames read=4431]
+hot other-table ratios: D3k/Rk=0.75 D2k/Rk=1.25 W/D3k=24.333333333333332
+hot bypass check (triggers dropped, then a title updated): W=fresh Rk=STALE Ck=fresh D2k=fresh D3k=STALE
+gate=FAIL sabotage=sabotage-d3

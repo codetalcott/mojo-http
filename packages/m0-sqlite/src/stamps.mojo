@@ -58,7 +58,9 @@ gate of `apps/table_notes`, whose other program is CPython's SQLite):
 - **A trigger fires for every program.** A write by another process, in
   another language, is stamped like this one's.
 
-What does not, and is as deliberate (DECISIONS D63):
+What does not, and is as deliberate (DECISIONS D63). A cache does not
+keep a rendering on a stamp for these reasons: `witness.mojo` reads the
+pages SQLite wrote instead (O32, D71).
 
 - **REPLACE deletes without a tombstone** when it displaces a row through
   a UNIQUE column (`INSERT OR REPLACE`, `UPDATE OR REPLACE`), unless the
@@ -68,6 +70,12 @@ What does not, and is as deliberate (DECISIONS D63):
 - **A table rebuilt by a migration (copy, drop, rename) loses its
   triggers** with no error. `watched` says so; ask it at startup and when
   `PRAGMA schema_version` moves.
+- **A connection with triggers turned off writes no stamp**
+  (`SQLITE_DBCONFIG_ENABLE_TRIGGER`), and moves no schema version for
+  `watched` to notice.
+- **Blob I/O writes no stamp.** `sqlite3_blob_write` rewrites a value in
+  place and fires no trigger. Both of these, and their missing stamps, run
+  in `smoke-table-notes` (N48).
 - **An update that changes nothing is stamped.** A trigger cannot say "no
   column differs" without naming the columns. A program that recomputes
   more than changed compares before it writes.

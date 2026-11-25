@@ -1,0 +1,81 @@
+# phase 1 run 1 2026-11-25T16:40:40Z; Apple M4, macOS 27.2.1; witness page map from /usr/bin/sqlite3 3.54.0 dbstat
+sqlite 3.50.4 python 3.13.7 sabotage_witness False
+event                                                         page   dv head   sv   pg1   tbl | D0         Dr         D2         D2w        D3         D1         | feed missed
+0 initial                                                       no   no  yes   no     -     - | refresh    refresh    refresh    refresh    refresh    refresh    | 
+1 update (control)                                             yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+2 insert into another table (control)                           no  yes   no   no    no    no | refresh    keep       keep       keep       keep       refresh    | []
+3 update storing the same title                                 no  yes  yes   no    no    no | refresh    refresh    refresh    refresh    keep       refresh    | []
+4 triggers dropped                                              no  yes   no  yes   yes    no | refresh    keep       refresh    refresh    refresh    refresh    | []
+5 update after the drop                                        yes  yes   no   no    no   yes | refresh    STALE keep STALE keep refresh    refresh    refresh    | [3]
+5b watch restored                                               no  yes   no  yes   yes    no | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+6 migration rebuild, then an update                            yes  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | [4]
+6b watch restored                                               no  yes   no  yes   yes    no | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+7 REPLACE through slug, no recursive_triggers                  yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | [5]
+8 update with triggers disabled (DBCONFIG)                     yes  yes   no   no    no   yes | refresh    STALE keep STALE keep STALE keep refresh    refresh    | [6]
+9 title rewritten by blob I/O                                  yes  yes   no   no    no   yes | refresh    STALE keep STALE keep STALE keep refresh    refresh    | [7]
+10a backup at h, then three updates                            yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+10 backup restored (back to h), three other updates (h+3 aga   yes  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | [8, 9, 10, 11, 12, 13]
+11 VACUUM                                                       no  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+12 folder deleted, cascading to notes                          yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+13 checkpoint TRUNCATE, then an update                         yes  yes  yes   no     -     - | refresh    refresh    refresh    refresh    refresh    refresh    | []
+14 300 inserts                                                  no  yes  yes   no   yes   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+15 stamp counter bumped by hand                                 no  yes  yes   no    no    no | refresh    refresh    refresh    refresh    keep       refresh    | []
+16 update (control)                                            yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+stale after: {"D0": [], "Dr": ["5", "5b", "6", "6b", "8", "9", "10", "11"], "D2": ["5", "8", "9"], "D2w": ["8", "9"], "D3": [], "D1": []}
+refreshes: {'D0': 20, 'Dr': 10, 'D2': 16, 'D2w': 17, 'D3': 17, 'D1': 20} D3 remaps: 9
+D3 not degenerate: keeps on event 2: True ; refreshes fewer than D0's: True
+verdict: A (D0 and D3 never stale; D3 keeps where it can)
+# run 2
+sqlite 3.50.4 python 3.13.7 sabotage_witness False
+event                                                         page   dv head   sv   pg1   tbl | D0         Dr         D2         D2w        D3         D1         | feed missed
+0 initial                                                       no   no  yes   no     -     - | refresh    refresh    refresh    refresh    refresh    refresh    | 
+1 update (control)                                             yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+2 insert into another table (control)                           no  yes   no   no    no    no | refresh    keep       keep       keep       keep       refresh    | []
+3 update storing the same title                                 no  yes  yes   no    no    no | refresh    refresh    refresh    refresh    keep       refresh    | []
+4 triggers dropped                                              no  yes   no  yes   yes    no | refresh    keep       refresh    refresh    refresh    refresh    | []
+5 update after the drop                                        yes  yes   no   no    no   yes | refresh    STALE keep STALE keep refresh    refresh    refresh    | [3]
+5b watch restored                                               no  yes   no  yes   yes    no | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+6 migration rebuild, then an update                            yes  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | [4]
+6b watch restored                                               no  yes   no  yes   yes    no | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+7 REPLACE through slug, no recursive_triggers                  yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | [5]
+8 update with triggers disabled (DBCONFIG)                     yes  yes   no   no    no   yes | refresh    STALE keep STALE keep STALE keep refresh    refresh    | [6]
+9 title rewritten by blob I/O                                  yes  yes   no   no    no   yes | refresh    STALE keep STALE keep STALE keep refresh    refresh    | [7]
+10a backup at h, then three updates                            yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+10 backup restored (back to h), three other updates (h+3 aga   yes  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | [8, 9, 10, 11, 12, 13]
+11 VACUUM                                                       no  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+12 folder deleted, cascading to notes                          yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+13 checkpoint TRUNCATE, then an update                         yes  yes  yes   no     -     - | refresh    refresh    refresh    refresh    refresh    refresh    | []
+14 300 inserts                                                  no  yes  yes   no   yes   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+15 stamp counter bumped by hand                                 no  yes  yes   no    no    no | refresh    refresh    refresh    refresh    keep       refresh    | []
+16 update (control)                                            yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+stale after: {"D0": [], "Dr": ["5", "5b", "6", "6b", "8", "9", "10", "11"], "D2": ["5", "8", "9"], "D2w": ["8", "9"], "D3": [], "D1": []}
+refreshes: {'D0': 20, 'Dr': 10, 'D2': 16, 'D2w': 17, 'D3': 17, 'D1': 20} D3 remaps: 9
+D3 not degenerate: keeps on event 2: True ; refreshes fewer than D0's: True
+verdict: A (D0 and D3 never stale; D3 keeps where it can)
+# sabotaged witness
+sqlite 3.50.4 python 3.13.7 sabotage_witness True
+event                                                         page   dv head   sv   pg1   tbl | D0         Dr         D2         D2w        D3         D1         | feed missed
+0 initial                                                       no   no  yes   no     -     - | refresh    refresh    refresh    refresh    refresh    refresh    | 
+1 update (control)                                             yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    STALE keep refresh    | []
+2 insert into another table (control)                           no  yes   no   no    no    no | refresh    keep       keep       keep       STALE keep refresh    | []
+3 update storing the same title                                 no  yes  yes   no    no    no | refresh    refresh    refresh    refresh    STALE keep refresh    | []
+4 triggers dropped                                              no  yes   no  yes   yes    no | refresh    keep       refresh    refresh    refresh    refresh    | []
+5 update after the drop                                        yes  yes   no   no    no   yes | refresh    STALE keep STALE keep refresh    STALE keep refresh    | [3]
+5b watch restored                                               no  yes   no  yes   yes    no | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+6 migration rebuild, then an update                            yes  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | [4]
+6b watch restored                                               no  yes   no  yes   yes    no | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+7 REPLACE through slug, no recursive_triggers                  yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    STALE keep refresh    | [5]
+8 update with triggers disabled (DBCONFIG)                     yes  yes   no   no    no   yes | refresh    STALE keep STALE keep STALE keep STALE keep refresh    | [6]
+9 title rewritten by blob I/O                                  yes  yes   no   no    no   yes | refresh    STALE keep STALE keep STALE keep STALE keep refresh    | [7]
+10a backup at h, then three updates                            yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    STALE keep refresh    | []
+10 backup restored (back to h), three other updates (h+3 aga   yes  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | [8, 9, 10, 11, 12, 13]
+11 VACUUM                                                       no  yes   no  yes   yes   yes | refresh    STALE keep refresh    refresh    refresh    refresh    | []
+12 folder deleted, cascading to notes                          yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    STALE keep refresh    | []
+13 checkpoint TRUNCATE, then an update                         yes  yes  yes   no     -     - | refresh    refresh    refresh    refresh    refresh    refresh    | []
+14 300 inserts                                                  no  yes  yes   no   yes   yes | refresh    refresh    refresh    refresh    refresh    refresh    | []
+15 stamp counter bumped by hand                                 no  yes  yes   no    no    no | refresh    refresh    refresh    refresh    keep       refresh    | []
+16 update (control)                                            yes  yes  yes   no    no   yes | refresh    refresh    refresh    refresh    STALE keep refresh    | []
+stale after: {"D0": [], "Dr": ["5", "5b", "6", "6b", "8", "9", "10", "11"], "D2": ["5", "8", "9"], "D2w": ["8", "9"], "D3": ["1", "2", "3", "5", "7", "8", "9", "10a", "12", "16"], "D1": []}
+refreshes: {'D0': 20, 'Dr': 10, 'D2': 16, 'D2w': 17, 'D3': 9, 'D1': 20} D3 remaps: 9
+D3 not degenerate: keeps on event 2: True ; refreshes fewer than D0's: True
+verdict: C

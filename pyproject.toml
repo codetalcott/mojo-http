@@ -1099,6 +1099,15 @@ deps = ["build-sqlite"]
 help = "Revert each scalar-function and one-image rule of m0-sqlite; every one must be caught"
 cmd = "python3 scripts/sqlite_function_sabotage.py"
 
+# The table witness's seven rules (SPEC O32): the order, a reset log, page 1,
+# the tables' own pages, and three about naming a table (as SQLite names it;
+# a name no table answers to; a table with no pages). Each is reverted by an
+# exact line of witness.mojo against test_witness.mojo. About two minutes,
+# seven `mojo run`s, so it sits in test-gates after test-sqlite.
+[tool.poe.tasks.sabotage-witness]
+help = "Revert each rule of m0-sqlite's table witness; every one must be caught"
+cmd = "python3 scripts/witness_sabotage.py"
+
 # verify-vtab-layout runs first: if the struct offsets are wrong, the vtab
 # tests below fail in confusing ways or pass by luck, and the offsets are the
 # more fundamental claim.
@@ -1268,7 +1277,7 @@ default_item_type = "ref"
 # `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "test-wheel-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+sequence = ["test-shim", "test-wheel-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-witness", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------

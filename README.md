@@ -208,9 +208,9 @@ def main() raises:
 | `m0-http` | Router, content negotiation, ETag, SSE, WebSockets, CORS, config, health, logging, multi-worker supervisor, cross-worker broadcast bus, accept sharing, the Mojo host, request-parsing hardening, view table, HTML builder and fragment, fragment-or-page, url_for and Query, form bodies, signed session cookies, CSRF and a one-user login | 1228 |
 | `m0-datastar` | Datastar v1.0.4 wire format, `DatastarStream` fan-out with `Last-Event-ID` replay or the newest state at open and cross-worker broadcast, `read_signals`, a `Fragment[Datastar]` inside a frame, checked against the SDK's own conformance cases | 100 |
 | `m0-wsgi` | WSGI/ASGI gateway — run Django, Flask, FastHTML, or any WSGI/ASGI app on this server | 229 |
-| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo, stamps that say which rows changed | 169 |
+| `m0-sqlite` | SQLite bindings, libsqlite3 opened with `dlopen` rather than linked — connections, statements, typed columns, transactions, bulk read-out, array virtual table, scalar functions written in Mojo, stamps that say which rows changed, a witness that says whether a table's pages were written | 180 |
 | `m0-postgres` | PostgreSQL bindings over libpq, opened with `dlopen` rather than linked — connections, bound parameters, text and binary results, SQLSTATE, `LISTEN`/`NOTIFY` | 84 |
-| **Total** | | **1895** |
+| **Total** | | **1906** |
 
 Modules are named `m0_*` — `mojo-http` is the repository, `m0` is the import prefix. Every capability, with the gate that proves it, is a row of [docs/SPEC.md](docs/SPEC.md).
 
@@ -466,6 +466,16 @@ changed since N" is then one query and the asker keeps one number
 ([the note](docs/notes/a-database-that-remembers-what-changed.md) has the
 costs and the two writes a stamp cannot see).
 
+**A table witness.** `TableWitness(path, ["notes"])` says whether any page
+of those tables was written since it last looked. It reads the WAL's own
+frames, with no SQL, so it sees a write by any program, including one that
+gets past a trigger. `look()` answers UNCHANGED, CHANGED or UNKNOWN; call it
+before the read transaction a rendering uses, and `settle()` after. A view
+keeps its rendering on UNCHANGED and renders again otherwise, which is how
+`apps/table_notes` spends nothing on a commit to another table (SPEC O32;
+[the note](docs/notes/a-witness-for-a-table.md) has the costs and what it
+cannot read). WAL mode only.
+
 **Bulk arrays.** `m0_array(?)` is an opt-in virtual table that streams a Mojo
 `List` into SQL without copying it, so N rows insert in one `sqlite3_step`
 instead of N (`uv run poe bench-sqlite` measures it).
@@ -577,7 +587,7 @@ different number.
 ```bash
 uv run poe                  # every task, with what it does
 uv run poe build-all        # compile each package to .mojoc
-uv run poe test-all         # 1895 unit tests, then compiles every example
+uv run poe test-all         # 1906 unit tests, then compiles every example
 uv run poe check-docs       # the docs gate, as the required check runs it
 uv run poe canary           # the whole suite against the Mojo nightly, then restore the pin
 ```

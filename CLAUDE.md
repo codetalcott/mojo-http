@@ -729,8 +729,12 @@ piece: an app that asks, a wire gate, then the lift.
   docs/notes/a-database-that-remembers-what-changed.md). Triggers give
   every row a watched table writes one entry with the stamp of its last
   change, so "what changed since N" is a query and whoever asks keeps one
-  number. A stamp can be got past and the clock cannot: `Cached` stays on
-  `data_version`. A delta is sent whole, never cut at a stamp. The stream
+  number. A stamp can be got past and the clock cannot, so a stamp never
+  keeps a rendering. The clock says when to look again, and
+  `m0_sqlite.TableWitness` (O32, D71; docs/notes/a-witness-for-a-table.md)
+  says whether a page of the view's tables was written: `look()` BEFORE the
+  read transaction, `settle()` after the rendering. A delta is sent whole,
+  never cut at a stamp. The stream
   over it is `m0_http.Feed` (`src/feed.mojo`, N51): ids are the
   application's, no journal, fan-out per subscriber from its own number,
   `behind(head)` names clients above the head too; `ViewState` carries

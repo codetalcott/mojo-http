@@ -141,3 +141,13 @@ from .stamps import (
     advance,
     slowest_cursor,
 )
+from .witness import (
+    TableWitness,
+    WalPosition,
+    parse_wal_index_header,
+    frame_page,
+    UNCHANGED,
+    CHANGED,
+    UNKNOWN,
+    WAL_INDEX_VERSION,
+)
