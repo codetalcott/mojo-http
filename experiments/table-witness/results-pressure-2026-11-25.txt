@@ -1,0 +1,94 @@
+# phase 3 2026-11-25T17:29:09Z; Apple M4, macOS 27.2.1, Mojo 1.2.0 -O3 reader (system SQLite 3.54.0), CPython 3.13.7 writer (SQLite 3.50.4); 20 s each
+## protocol A mode 0 seed 1
+protocol=A (as pre-registered)
+mode=0 checks=12343622 kept=22019 changed=125578 cant_tell=49688 remaps=49688 distinct_salts=49400 frames_read=564587
+mode=0 comparisons=391 stale=0 kept_at_comparison=3 (0.7672634271099744%) ack_timeouts=0
+mode=0 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=24.0
+mode=0 not degenerate: False
+verdict(mode 0)=pass not met: no stale page, but degenerate (too few comparisons kept)
+writer: {"commits": 149086, "notes_writes": 126114, "other_writes": 22972, "pauses": 391, "checkpoints": {"PASSIVE": 16759, "RESTART": 16311, "TRUNCATE": 16542}, "checkpoint_busy": 0}
+## protocol A mode 0 seed 2
+protocol=A (as pre-registered)
+mode=0 checks=12245440 kept=18111 changed=103231 cant_tell=40911 remaps=40911 distinct_salts=40628 frames_read=463928
+mode=0 comparisons=373 stale=0 kept_at_comparison=6 (1.6085790884718498%) ack_timeouts=0
+mode=0 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=23.0
+mode=0 not degenerate: False
+verdict(mode 0)=pass not met: no stale page, but degenerate (too few comparisons kept)
+writer: {"commits": 122769, "notes_writes": 103757, "other_writes": 19012, "pauses": 373, "checkpoints": {"PASSIVE": 13558, "RESTART": 13636, "TRUNCATE": 13598}, "checkpoint_busy": 0}
+## protocol A mode 1 seed 3
+protocol=A (as pre-registered)
+  STALE at comparison 9: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 34: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 37: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+mode=1 checks=13681114 kept=93311 changed=0 cant_tell=31528 remaps=31528 distinct_salts=31332 frames_read=355975
+mode=1 comparisons=359 stale=81 kept_at_comparison=86 (23.955431754874652%) ack_timeouts=0
+mode=1 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=4.0
+mode=1 not degenerate: True
+sabotage mode 1 caught: True
+writer: {"commits": 94549, "notes_writes": 79770, "other_writes": 14779, "pauses": 359, "checkpoints": {"PASSIVE": 10475, "RESTART": 10493, "TRUNCATE": 10462}, "checkpoint_busy": 0}
+## protocol A mode 2 seed 4
+protocol=A (as pre-registered)
+mode=2 checks=12076506 kept=16497 changed=93235 cant_tell=37113 remaps=37113 distinct_salts=36867 frames_read=416100
+mode=2 comparisons=364 stale=0 kept_at_comparison=4 (1.098901098901099%) ack_timeouts=0
+mode=2 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=23.0
+mode=2 not degenerate: False
+sabotage mode 2 caught: False
+writer: {"commits": 110940, "notes_writes": 93704, "other_writes": 17236, "pauses": 364, "checkpoints": {"PASSIVE": 12472, "RESTART": 12173, "TRUNCATE": 12342}, "checkpoint_busy": 0}
+## protocol A mode 3 seed 5
+protocol=A (as pre-registered)
+  STALE at comparison 1: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 19: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 25: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+mode=3 checks=12951773 kept=75710 changed=132760 cant_tell=402 remaps=402 distinct_salts=52320 frames_read=595764
+mode=3 comparisons=389 stale=110 kept_at_comparison=300 (77.12082262210797%) ack_timeouts=0
+mode=3 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=22.0
+mode=3 not degenerate: True
+sabotage mode 3 caught: True
+writer: {"commits": 157666, "notes_writes": 133340, "other_writes": 24326, "pauses": 389, "checkpoints": {"PASSIVE": 17311, "RESTART": 17670, "TRUNCATE": 17490}, "checkpoint_busy": 0}
+## protocol B mode 0 seed 1
+protocol=B (settle, then quiet commits; post-hoc)
+mode=0 checks=11569041 kept=24046 changed=135356 cant_tell=53443 remaps=53443 distinct_salts=53063 frames_read=608747
+mode=0 comparisons=390 stale=0 kept_at_comparison=390 (100.0%) ack_timeouts=0
+mode=0 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=24.0
+mode=0 not degenerate: True
+verdict(mode 0)=A
+writer: {"commits": 160943, "notes_writes": 135933, "other_writes": 25010, "pauses": 390, "checkpoints": {"PASSIVE": 18003, "RESTART": 17537, "TRUNCATE": 17694}, "checkpoint_busy": 0}
+## protocol B mode 0 seed 2
+protocol=B (settle, then quiet commits; post-hoc)
+mode=0 checks=12151477 kept=14648 changed=80548 cant_tell=31834 remaps=31834 distinct_salts=31594 frames_read=362284
+mode=0 comparisons=359 stale=0 kept_at_comparison=359 (100.0%) ack_timeouts=0
+mode=0 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=5.0
+mode=0 not degenerate: True
+verdict(mode 0)=A
+writer: {"commits": 96377, "notes_writes": 80908, "other_writes": 15469, "pauses": 359, "checkpoints": {"PASSIVE": 10458, "RESTART": 10623, "TRUNCATE": 10576}, "checkpoint_busy": 0}
+## protocol B mode 1 seed 3
+protocol=B (settle, then quiet commits; post-hoc)
+  STALE at comparison 6: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 9: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 14: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+mode=1 checks=13268648 kept=106796 changed=0 cant_tell=35833 remaps=35833 distinct_salts=35639 frames_read=406076
+mode=1 comparisons=364 stale=101 kept_at_comparison=364 (100.0%) ack_timeouts=0
+mode=1 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=5.0
+mode=1 not degenerate: True
+sabotage mode 1 caught: True
+writer: {"commits": 108025, "notes_writes": 90835, "other_writes": 17190, "pauses": 364, "checkpoints": {"PASSIVE": 11965, "RESTART": 11964, "TRUNCATE": 11779}, "checkpoint_busy": 0}
+## protocol B mode 2 seed 4
+protocol=B (settle, then quiet commits; post-hoc)
+mode=2 checks=11748017 kept=16873 changed=93117 cant_tell=36888 remaps=36888 distinct_salts=36662 frames_read=416851
+mode=2 comparisons=362 stale=0 kept_at_comparison=362 (100.0%) ack_timeouts=0
+mode=2 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=23.0
+mode=2 not degenerate: True
+sabotage mode 2 caught: False
+writer: {"commits": 111247, "notes_writes": 93666, "other_writes": 17581, "pauses": 362, "checkpoints": {"PASSIVE": 12420, "RESTART": 12154, "TRUNCATE": 12170}, "checkpoint_busy": 0}
+## protocol B mode 3 seed 5
+protocol=B (settle, then quiet commits; post-hoc)
+  STALE at comparison 6: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 15: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+  STALE at comparison 16: last decision 0 (0 unchanged, 1 changed, 2 can't tell)
+mode=3 checks=12900588 kept=49408 changed=85905 cant_tell=250 remaps=250 distinct_salts=33863 frames_read=386454
+mode=3 comparisons=363 stale=60 kept_at_comparison=363 (100.0%) ack_timeouts=0
+mode=3 check us (every call, the clock's fast path included): median=1.0 p90=2.0 p99=4.0
+mode=3 not degenerate: True
+sabotage mode 3 caught: True
+writer: {"commits": 102582, "notes_writes": 86210, "other_writes": 16372, "pauses": 363, "checkpoints": {"PASSIVE": 11221, "RESTART": 11462, "TRUNCATE": 11212}, "checkpoint_busy": 0}
+finished

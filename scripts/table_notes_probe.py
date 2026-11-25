@@ -313,20 +313,37 @@ def one(port, db):
     page_tag = tag_of(resp)
     check(c.stats()["fills"] == fills + 1, "another program's commit did not cost exactly one rendering")
 
-    # A commit to another table moves the clock and not the tag.
+    # A commit to another table moves the clock and not the tag, and costs no
+    # rendering: the witness finds no page of `notes` in what was committed
+    # (O32). Creating that table writes page 1, the schema, where pages change
+    # hands, so the witness cannot tell and the list is read again once.
     before = c.stats()
     write(db, "CREATE TABLE IF NOT EXISTS elsewhere (x INTEGER)")
+    check(c.stats()["clock"] != before["clock"], "a schema change did not move the clock: the next check is vacuous")
+    resp, body = c.get("/notes", {"If-None-Match": page_tag})
+    check(resp.status == 304, "a schema change elsewhere changed the list's tag")
+    mid = c.stats()
+    check(mid["fills"] == before["fills"] + 1 and mid["unknown"] == before["unknown"] + 1,
+          f"a schema change was not read again (fills {before['fills']} -> {mid['fills']},"
+          f" unknown {before['unknown']} -> {mid['unknown']}): page 1 must be UNKNOWN")
     write(db, "INSERT INTO elsewhere VALUES (1)")
-    check(c.stats()["clock"] != before["clock"], "a commit to another table did not move the clock: the next check is vacuous")
+    check(c.stats()["clock"] != mid["clock"], "a commit to another table did not move the clock: the next check is vacuous")
     resp, body = c.get("/notes", {"If-None-Match": page_tag})
     check(resp.status == 304, "a commit to ANOTHER table changed the list's tag")
-    check(c.stats()["fills"] == before["fills"] + 1, "the clock moved and the list was not rendered again to find out")
+    after = c.stats()
+    check(after["fills"] == mid["fills"], "a commit to another table rendered the list again")
+    check(after["unchanged"] == mid["unchanged"] + 1, "the witness did not answer UNCHANGED for a commit to another table")
 
     # An edit that keeps every length: a size-and-time validator's stale 304.
+    # One row changed, so one row is rendered, not the page.
+    before = c.stats()
     write(db, "UPDATE notes SET title = 'from 0utside' WHERE title = 'from outside'")
     resp, body = c.get("/notes", {"If-None-Match": page_tag})
     check(resp.status == 200 and "from 0utside" in body, "a same-length edit was answered 304")
     page_tag = tag_of(resp)
+    after = c.stats()
+    check(after["fills"] == before["fills"] + 1 and after["rows_rendered"] == before["rows_rendered"] + 1,
+          f"one changed row rendered {after['rows_rendered'] - before['rows_rendered']} rows")
 
     phase("delete")
     # --- delete: the one swap ----------------------------------------------------
@@ -540,6 +557,37 @@ def one(port, db):
     check(len(appended) == 8 and len(set(appended)) == 8, f"the bursts' rows: {appended}")
     check(c.stats()["feed_refused"] > 0, "the slow subscriber's buffer never filled; the phase proved nothing")
     slow.close()
+
+    phase("writes no stamp sees")
+    # Two ways any program gets past a trigger: a connection with triggers
+    # turned off, and blob I/O. Neither moves a stamp, so a cache kept on
+    # stamps would serve the old title. The list's cache is kept on the pages
+    # SQLite wrote (O32, D71), so both reach it.
+    check(hasattr(sqlite3.Connection, "setconfig") and hasattr(sqlite3.Connection, "blobopen"),
+          f"this Python ({sys.version.split()[0]}) has no setconfig or blobopen: the phase needs 3.12")
+    con = sqlite3.connect(db, timeout=10)
+    first = con.execute("SELECT min(id) FROM notes").fetchone()[0]
+    con.close()
+    resp, body = c.get("/notes")
+    held = tag_of(resp)
+    head = c.stats()["head"]
+    con = sqlite3.connect(db, timeout=10)
+    con.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
+    con.execute("UPDATE notes SET title = 'no trigger saw this' WHERE id = ?", (first,))
+    con.commit()
+    con.close()
+    check(c.stats()["head"] == head, "a write with triggers turned off was stamped: the check is vacuous")
+    resp, body = c.get("/notes", {"If-None-Match": held})
+    check(resp.status == 200 and "no trigger saw this" in body, "a write with triggers turned off did not reach the list")
+    held = tag_of(resp)
+    con = sqlite3.connect(db, timeout=10)
+    with con.blobopen("notes", "title", first) as blob:
+        blob.write(b"blob-rewritten here")
+    con.commit()
+    con.close()
+    check(c.stats()["head"] == head, "a blob write was stamped: the check is vacuous")
+    resp, body = c.get("/notes", {"If-None-Match": held})
+    check(resp.status == 200 and "blob-rewritten here" in body, "a title rewritten by blob I/O did not reach the list")
 
     c.close()
     print("table_notes_probe one: OK")

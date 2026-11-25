@@ -117,7 +117,10 @@ title with a byte that is not UTF-8 still decodes; and under
 two loops answer one stamp identically, neither having kept the client's
 place.
 
-The list's cache stays on the clock. A stamp can be got past (the two
+The list's cache stays on the clock. (From 2026-11-25 it also asks a
+table witness whether `notes`' pages were written, and still never a stamp:
+D71, [a-witness-for-a-table](a-witness-for-a-table.md).) A stamp can be got
+past (the two
 traps below) and `data_version` cannot, so a rendering keyed on stamps
 would be as fragile as the triggers, to spare one rendering when another
 table commits.

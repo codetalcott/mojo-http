@@ -13,17 +13,23 @@ may open, and the app is what that takes:
   is `open()`, `reader` is `open_readonly()` on the same file. Every view
   renders through the reader, so what it renders and the clock it asks are
   one connection's.
-- **the list is rendered when the clock moves, and not before.**
-  `reader.data_version()` is a number that differs once another
-  connection has committed, this thread's own writer included. The view
-  asks it (about a microsecond), and renders only when `Cached` was
-  filled at another value. That view fills a cache, so it writes, and
-  registers with `add_write` beside the resource rather than in its
-  `list` slot.
+- **the list is looked at again when the clock moves, and rendered again
+  only when its table's pages were written.**
+  - `reader.data_version()` is a number that differs once another
+    connection has committed, this thread's own writer included. The view
+    asks it (about a microsecond).
+  - When the clock has moved, a `TableWitness` over `notes` (`m0_sqlite`,
+    O32) reads the frames committed since its last look. If none wrote a
+    page of `notes`, the kept rendering stands, with no SQL.
+  - Otherwise, or when the witness can't tell, the page is read again and
+    only the rows whose title changed are rendered: a row's `<li>` reads
+    its id and its title and nothing else.
+  - That view fills a cache, so it writes, and registers with `add_write`
+    beside the resource rather than in its `list` slot.
 - **the validator is a hash of what is sent.** `conditional` puts an
   `ETag` over the response's own body and answers 304 to a client that
-  names it. A commit to another table moves the clock, costs one
-  rendering, and leaves the tag where it was.
+  names it. A commit to another table moves the clock and writes no page
+  of `notes`, so it costs no rendering and leaves the tag where it was.
 - **a row has one name.** The id in a URL is the rowid written the one
   way a number is: `/notes/7` is the row and `/notes/07` is a 404. And a
   name has one row: the key is `AUTOINCREMENT`, so a deleted note's id is
@@ -40,8 +46,11 @@ may open, and the app is what that takes:
   ones that are gone. A client keeps `head` and asks again from it; no
   loop keeps anything for it, so either loop answers. Below the floor
   tombstones were pruned to, the answer is `reset`: read the list again.
-  The list's cache stays on the clock, which no write can get past; a
-  stamp can be (a REPLACE without the pragma, a rebuilt table).
+  The list's cache is never kept on a stamp, which a write can get past:
+  a REPLACE without the pragma, a rebuilt table, a connection with
+  triggers turned off, blob I/O. The clock says when to look, and the
+  witness, reading the pages SQLite wrote, says whether `notes` can have
+  changed (D71).
 - **the list is live, from either loop, and the server keeps nothing for
   the page.** `GET /notes/events` is a `Feed` (`m0_http.feed`): each
   subscriber stands at a stamp, the loop's tick asks the clock, and when
@@ -78,9 +87,11 @@ No session and so no CSRF token: `apps/fragment_notes` is the login, and
     DELETE /notes/:id        removes it; answers the list
     GET    /notes/changes    `?since=N`: the rows stamped above N, as JSON
     GET    /notes/events     SSE: the same rows as `<li>`s, as they change
-    GET    /stats            this loop's cache and stamp:
+    GET    /stats            this loop's cache, witness and stamp:
                              {"worker","fills","clock","head","watched",
-                              "subscribers","feed_sent","feed_refused"}
+                              "subscribers","feed_sent","feed_refused",
+                              "looks","unchanged","changed","unknown",
+                              "rows_rendered"}
     GET    /                 303 to /notes
     GET    /health           {"status":"ok"}
 
@@ -89,6 +100,7 @@ The database is `M0_DB`, else `table_notes.db` in the working directory.
 Run it:  uv run poe serve-table-notes
 """
 
+from std.collections import Dict
 from std.os import getenv
 
 from m0_server import HTTPRequest, HTTPResponse
@@ -122,6 +134,8 @@ from m0_http.sse import format_sse_event
 from m0_core.json_escape import escape_json_string
 from m0_sqlite import (
     Connection,
+    TableWitness,
+    UNCHANGED,
     install_stamps,
     open,
     open_readonly,
@@ -176,6 +190,13 @@ struct Notes(ViewState):
     var rows: Cached
     var rows_head: Int
     """The stamp the kept page was rendered at: where its reader stands."""
+    var witness: TableWitness
+    """Whether a page of `notes` was written since the kept page's look (O32)."""
+    var items: Dict[Int, Item]
+    """The kept page's rows, each rendering beside the title it came from."""
+    var rows_rendered: Int
+    """How many `<li>`s the first page has rendered: what `/stats` reads to say
+    a change cost one row, not the page."""
     var feed: Feed
     var clock: Int
     """The clock the feed last fanned out at."""
@@ -206,6 +227,9 @@ struct Notes(ViewState):
         self.reader = open_readonly(path)
         self.rows = Cached()
         self.rows_head = 0
+        self.witness = TableWitness(path, ["notes"])
+        self.items = Dict[Int, Item]()
+        self.rows_rendered = 0
         self.feed = Feed(capacity)
         self.clock = 0
         self.worker = worker
@@ -257,23 +281,41 @@ struct Notes(ViewState):
         return note_urls()
 
     def first_page(mut self) raises -> String:
-        """The first page of the list, rendered only if the clock has
-        moved since it last was. The clock is asked BEFORE the rendering:
-        a commit between the two leaves current rows under an old value,
-        which costs one more rendering; the other order keeps stale ones."""
+        """The first page of the list. When the clock has moved since it was
+        kept, the witness says whether `notes` can have changed. If not, the
+        kept page stands. If so, or when it can't tell, the page is read
+        again and only its changed rows are rendered.
+
+        The clock is asked BEFORE the look, and the look BEFORE the read
+        transaction. A commit between them then costs one more rendering, and
+        never a stale page: the read holds at least what the look read, and
+        `settle` covers no more than that.
+
+        The kept page also carries the stamp head it was rendered at, in its
+        script. Only `notes` is watched, so the head moves only with a write
+        that wrote a page of `notes`, which the witness answers CHANGED. Watch
+        a second table and this page would keep an old head: watch it here
+        too."""
         var now = self.reader.data_version()
         if not self.rows.current(now):
-            # The stamp and the rows in one snapshot: a row born after
-            # the stamp would be in the page AND appended by the feed.
-            self.reader.begin()
-            try:
-                self.rows_head = stamp_head(self.reader)
-                var body = render_list(self.reader, 0, self.rows_head)
-                self.reader.commit()
-                _ = self.rows.fill(now, body^)
-            except e:
-                self.reader.rollback()
-                raise e^
+            var answer = self.witness.look()
+            if self.rows.filled and answer == UNCHANGED:
+                self.rows.clock = now
+            else:
+                # The stamp and the rows in one snapshot: a row born after
+                # the stamp would be in the page AND appended by the feed.
+                self.reader.begin()
+                try:
+                    self.rows_head = stamp_head(self.reader)
+                    var body = render_list_reusing(
+                        self.reader, 0, self.rows_head, self.items, self.rows_rendered
+                    )
+                    self.reader.commit()
+                    _ = self.rows.fill(now, body^)
+                except e:
+                    self.reader.rollback()
+                    raise e^
+            self.witness.settle()
         return self.rows.body
 
 
@@ -338,27 +380,61 @@ comptime _FEED_SCRIPT_TAIL = (
 )
 
 
+@fieldwise_init
+struct Item(Copyable, Movable):
+    """One row's rendering, and the title it was rendered from."""
+
+    var title: String
+    var li: String
+
+
 def render_list(db: Connection, after: Int, head: Int = -1) raises -> String:
     """The `notes` fragment: `LIST_PAGE` rows after rowid `after`, and a
     link to the rows after those when there are any. With `head`, the
     first page carries the script that keeps it live from that stamp."""
+    var none = Dict[Int, Item]()
+    var rendered = 0
+    return render_list_reusing(db, after, head, none, rendered)
+
+
+def render_list_reusing(
+    db: Connection, after: Int, head: Int, mut items: Dict[Int, Item], mut rendered: Int
+) raises -> String:
+    """`render_list`, taking each row's `<li>` from `items` when the row's title
+    is the one it was rendered from, and leaving `items` holding this page's
+    rows. A row's `<li>` reads its id and title and nothing else, so those
+    two are its key. The row itself says whether its rendering is current;
+    no stamp does."""
     var f = Frag(NOTES_ID)
     f.raw(el("p", "", el("a", attr("href", NOTES_NEW), "New note")))
     var q = db.prepare("SELECT id, title FROM notes WHERE id > ?1 ORDER BY id LIMIT ?2")
     q.bind_int(1, after)
     q.bind_int(2, LIST_PAGE + 1)
-    var items = String()
+    var html = String()
     var shown = 0
     var last = after
     var more = False
+    var kept = Dict[Int, Item]()
     while q.step():
         if shown == LIST_PAGE:
             more = True
             break
         last = q.column_int(0)
-        items += render_item(f, last, q.column_text(1), String(""))
+        var title = q.column_text(1)
+        var current = False
+        if last in items:
+            current = items[last].title == title
+        var li: String
+        if current:
+            li = items[last].li
+        else:
+            li = render_item(f, last, title, String(""))
+            rendered += 1
+        html += li
+        kept[last] = Item(title^, li^)
         shown += 1
-    f.raw(el("ul", attr("id", LIST_ID), items))
+    items = kept^
+    f.raw(el("ul", attr("id", LIST_ID), html))
     if shown == 0:
         f.raw(el("p", attr("id", "none-yet"), text("none yet")))
     if more:
@@ -738,8 +814,8 @@ def changes(
 def stats(
     req: HTTPRequest, params: List[String], st: Notes
 ) raises -> HTTPResponse:
-    """GET /stats — how often this loop rendered the list, and where the
-    stamps stand, for the gate."""
+    """GET /stats — how often this loop rendered the list, what its witness
+    answered, and where the stamps stand, for the gate."""
     return reply.json(
         200, "OK",
         String(
@@ -748,7 +824,10 @@ def stats(
             ',"head":', stamp_head(st.reader),
             ',"watched":', "true" if watched(st.reader, "notes") else "false",
             ',"subscribers":', st.feed.subscribers(NOTES_ID),
-            ',"feed_sent":', st.feed.sent, ',"feed_refused":', st.feed.refused, "}",
+            ',"feed_sent":', st.feed.sent, ',"feed_refused":', st.feed.refused,
+            ',"looks":', st.witness.looks, ',"unchanged":', st.witness.unchanged,
+            ',"changed":', st.witness.changed, ',"unknown":', st.witness.unknown,
+            ',"rows_rendered":', st.rows_rendered, "}",
         ),
     )
 

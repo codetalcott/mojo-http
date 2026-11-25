@@ -13,6 +13,22 @@ default is listed under **Behaviour changes**
 
 ## [Unreleased]
 
+### Added
+
+- **`m0_sqlite.TableWitness`: whether a table's pages were written**
+  (SPEC O32, [DECISIONS](docs/DECISIONS.md) D71).
+  - It reads the wal-index header and the headers of the WAL frames
+    committed since its last look, with no SQL.
+  - `look()` answers UNCHANGED, CHANGED or UNKNOWN. Anything it can't read
+    is UNKNOWN: page 1 written, a log reset, no `-shm`, another wal-index
+    version, no `dbstat`, a name no table answers to, a virtual table.
+  - Table names resolve as SQLite resolves them, without regard to case.
+  - Call `look()` before the read transaction a rendering uses, and
+    `settle()` after it.
+  - It sees every write path, a connection with triggers turned off and blob
+    I/O included, which a stamp doesn't.
+  - WAL mode only; it opens a read-only connection of its own.
+
 ### Behaviour changes
 
 - **A Mojo host view that answers `M0-Hold` is a 500, named on stderr**
@@ -28,6 +44,17 @@ default is listed under **Behaviour changes**
   silent answer back. A handler of the application's own is unchanged.
   It reaches applications built with `m0` in its next release.
 ### Changed
+
+- **`apps/table_notes` renders its first page only when `notes` changed**
+  (SPEC N48, D71).
+  - On a moved clock it asks a `TableWitness`. A commit to another table now
+    costs no rendering, where it cost a whole one (68–78 µs against 3, Apple
+    M4).
+  - When `notes` changed, only the rows whose title changed are rendered.
+  - The page is never kept on a stamp, so a write with triggers turned off,
+    or by blob I/O, reaches it.
+  - `/stats` gains `looks`, `unchanged`, `changed`, `unknown` and
+    `rows_rendered`.
 
 - **The server package is `m0_server`, renamed from `lightbug_http`**
   ([DECISIONS](docs/DECISIONS.md) D70). The hard fork of lightbug_http in

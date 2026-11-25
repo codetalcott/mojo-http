@@ -134,15 +134,67 @@ table. Seven rules:
   that writes its outputs; giving it a transaction of its own would make
   "outputs committed, place lost" possible, which is the one thing the
   table exists to rule out.
-- **A stamp never validates anything.** It can be got past (a REPLACE
-  without `recursive_triggers` on the writer, a rebuilt table), so a cache
-  stays keyed on `data_version`. Both traps are tests; do not "fix" one by
-  deleting it.
+- **A stamp never validates anything.** It can be got past: a REPLACE
+  without `recursive_triggers` on the writer, a rebuilt table, a connection
+  with triggers turned off, blob I/O (the last two run in
+  `smoke-table-notes`). So a cache stays keyed on `data_version`. The
+  first two are tests in `test_stamps.mojo`, the last two in the smoke; do
+  not "fix" one by deleting it. The clock says when to look again. Whether a table can have
+  changed is the witness's to say (below), never a stamp's.
 - **`stamp_of` can go down** when the tombstone that held it is pruned:
   compared for equality, like the clock.
 - **A delta is whole.** `born` says a client at N lacks a row only when N
   was the head of a snapshot it has all of, so nothing here offers a
   LIMIT, and an application does not add one.
+
+**The witness reads what SQLite wrote** (SPEC O32, D71;
+docs/notes/a-witness-for-a-table.md). `src/witness.mojo` answers whether any
+page of some tables was written since the last look, from the wal-index
+header and the frames' headers, with no SQL. Six rules:
+
+- **`look` before the read transaction, `settle` after the rendering, and
+  `settle` takes what `look` read.**
+  - The caller's snapshot, begun after the look, holds at least the
+    `mxFrame` the look read. Covering a position read later would cover
+    commits the rendering does not hold.
+  - That bug is invisible to a writer racing the witness, since the next
+    write repairs it. `test_a_commit_the_rendering_does_not_hold_is_looked_at_next`
+    injects the commit, and `poe sabotage-witness` reverts the line.
+  - Do not let a caller look from inside a read transaction.
+- **UNKNOWN is the answer to anything unexpected,** and it is never wrong:
+  the caller renders again, as the clock alone would. A new case the
+  witness can't read goes to UNKNOWN, never to a guess.
+- **Page 1 is UNKNOWN.** Allocation, a free, growth and a schema change all
+  write it, so while it is unwritten no page has changed hands and the page
+  map holds. Do not drop the check to save remaps: the map would go silently
+  wrong.
+- **The wal-index is read as walformat.html §2.1 gives it.**
+  - Two copies, until they agree; `iVersion` must be 3007000.
+  - Native-endian fields, except the salts: they are the WAL header's own
+    bytes, compared and never interpreted. Reading them as integers in
+    native order made every look UNKNOWN in the probe that found it.
+  - The page calls the format the VFS's own, so a header this can't read is
+    UNKNOWN.
+- **A table is named as SQLite names it, and a map is never empty.**
+  - `dbstat` matches names exactly, and SQLite resolves table names without
+    regard to case. So each name is looked up in `sqlite_schema` with
+    `COLLATE NOCASE`, and the stored name goes to `dbstat`.
+  - A name no table answers to, or a table with no pages (a virtual
+    table), leaves the witness unmapped, and so UNKNOWN.
+  - A map of nothing answers UNCHANGED for every write. `"Notes"` given
+    straight to `dbstat` did exactly that, found in review before it
+    merged.
+  - What a kept rendering carries besides the rows (the stamp head in
+    `table_notes`' script) is the caller's to keep current: watch every
+    table whose writes it counts.
+- **The witness keeps a connection of its own.** It keeps `-wal` and `-shm`
+  from being deleted at the last close, and maps the pages (`dbstat`) in its
+  own read transaction, begun after the look. Do not drop it for a caller's
+  connection: the map's snapshot is then the caller's to get right.
+
+A WAL reset (a finished checkpoint, then a write) is one UNKNOWN each.
+Checkpointing every few commits makes a quarter of looks UNKNOWN (the
+note's measurement). That is a cost, not a defect.
 
 **The change clock is `Connection.data_version()`, and there is no commit
 hook** (SPEC O25, D60; docs/notes/a-resource-over-a-table.md). The pragma
