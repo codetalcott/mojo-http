@@ -337,6 +337,36 @@ def test_a_bypassed_delete_stays_a_difference_after_its_id_comes_back() raises:
     _cleanup(p)
 
 
+def test_a_bypassed_delete_is_found_by_the_copy_it_leaves() raises:
+    """A row deleted with the triggers out of the way leaves its copy, and
+    the check finds a copy whose row is gone: in a window that is full,
+    and in a table shorter than the window, where every copy is read, the
+    last row's included.
+
+    covers: N57
+    """
+    var p = _fresh("gone_full")
+    var n = Notes(p, 0, 64)
+    _seed(p, 120)
+    _ = n.first_page()
+    var client = _head(p)
+    _bypass(p, "DELETE FROM notes WHERE id = 5", 5)
+    assert_equal(_copy(p, 5), "t-4", "the bypass reached the copy: the test proves nothing")
+    _ = n.first_page()
+    assert_equal(n.mismatches, 1, "a copy whose row is gone was not found, in a full window")
+    assert_true(_floor(p) > client, "a client holding the deleted row is not below the floor")
+    _cleanup(p)
+    var s = _fresh("gone_short")
+    var m = Notes(s, 0, 64)
+    _seed(s, 30)
+    _ = m.first_page()
+    # The last row: a bound on the highest id left would not reach it.
+    _bypass(s, "DELETE FROM notes WHERE id = 30", 30)
+    _ = m.first_page()
+    assert_equal(m.mismatches, 1, "a copy whose row is gone was not found, in a short table")
+    _cleanup(s)
+
+
 def test_a_title_stored_as_bytes_is_answered_once() raises:
     """Another program may store a title as a BLOB, and the copy trigger
     copies it as one. After a bypass the copy is set by comparing bytes:

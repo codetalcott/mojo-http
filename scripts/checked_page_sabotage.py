@@ -9,6 +9,9 @@ claims it, which must fail in its own words:
 
 - **the comparison:** the window's rows against their copies in
   `notes_seen`. Always answered "the same", a bypass reaches no client.
+- **a copy whose row is gone is found,** over the window's ids, and every
+  one in a table shorter than the window: else a row deleted with the
+  triggers out of the way stays on every client.
 - **the copy moves with every stamped write:** the update trigger left
   out, every stamped edit reads as a bypass and raises the floor for
   nothing.
@@ -35,7 +38,7 @@ claims it, which must fail in its own words:
 - **`raise_floor` moves the floor, past every stamp given,** in m0-sqlite:
   past the counter a restore brought back, too.
 
-About two minutes on an Apple M4: sixteen `mojo run`s of the app's test
+About two minutes on an Apple M4: eighteen `mojo run`s of the app's test
 file, three of `test_stamps.mojo`.
 
     python3 scripts/checked_page_sabotage.py
@@ -62,6 +65,22 @@ RULES = [
         "        differ = List[Seen]()\n        if len(differ) > 0 and why.byte_length() == 0:\n",
         gate="app",
         expect="test_a_write_no_stamp_saw_raises_the_floor_over_every_client",
+    ),
+    rule(
+        "gone: a copy whose row is gone is found (N57)",
+        SERVER,
+        "        while g.step():\n",
+        "        while False and g.step():\n",
+        gate="app",
+        expect="test_a_bypassed_delete_is_found_by_the_copy_it_leaves",
+    ),
+    rule(
+        "short: in a table shorter than the window every copy is read, the last row's included (N57)",
+        SERVER,
+        "        g.bind_int(1, last if shown == CHECK_WINDOW else Int.MAX)\n",
+        "        g.bind_int(1, last)\n",
+        gate="app",
+        expect="test_a_bypassed_delete_is_found_by_the_copy_it_leaves",
     ),
     rule(
         "trigger: a stamped update moves the copy with the row (N57)",
