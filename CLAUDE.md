@@ -741,6 +741,13 @@ piece: an app that asks, a wire gate, then the lift.
   the stream hooks with defaults. `apps/table_notes`' list is live on it
   (N50). Read [packages/m0-sqlite/AGENTS.md](packages/m0-sqlite/AGENTS.md)
   first.
+- **`apps/table_notes` is frozen** (2026-11-26). It is the end-to-end
+  proof of what shipped (N48-N50, N57, O32, O33), and it is no longer
+  where its experiments are run. It changes in two ways only:
+  - **a lift:** a change proven elsewhere, arriving with its SPEC rows,
+    tests and sabotage rules, and with `experiments/checked-page/` run
+    again on the lifted code, as #714 was;
+  - **a gate fix** for what it already claims, as #716 is.
 - **A table that streams** (`apps/blobs`, SPEC N16;
   docs/notes/a-world-the-page-cannot-hold.md): `ViewService` forwards only
   `func` and `before_request`, so an app that also owns the SSE hooks writes

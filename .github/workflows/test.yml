@@ -274,9 +274,13 @@ jobs:
   # train 20 (#485), most of it `build-apps` (~290 s and ~275-300 s) and
   # on ubuntu the pool's sabotage (~175 s). The five tasks moved from
   # `test-packages` added about 240 s on ubuntu and 180 on macOS. Measured
-  # cold since, this job ran 13.3-17.6 min on ubuntu and 11.3-13.2 on
-  # macOS, so the cap stays 35, twice its slowest run: 30 would leave a
-  # 17.6-minute run 1.7 times its length. Once TH made `unit-tests` the
+  # cold then, this job ran 13.3-17.6 min on ubuntu and 11.3-13.2 on
+  # macOS, and the cap was 35, twice its slowest run. It has grown since:
+  # green, 19.0-29.9 min on ubuntu and 11.9-16.4 on macOS over the 13 runs
+  # to 2026-11-26. #716's ubuntu leg was cancelled at 35 twice,
+  # on runners where steps it did not change ran 1.7-1.9 times as long.
+  # The cap is 45, 1.5 times the slowest green run. Twice it would be 60;
+  # past 45, split the job, as the smokes were. Once TH made `unit-tests` the
   # shorter half, the Datastar SDK's two tasks and the scaffold's templates
   # went back to it. `unit-tests`' comment has the rest of the
   # measurements, and why `test-postgres` did not move here.
@@ -288,7 +292,7 @@ jobs:
       matrix:
         os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 35
+    timeout-minutes: 45
     # The coverage this job's test step declares (SPEC F12: the shim's
     # rows, the Datastar SDK's, the templates', the copy-back guard's) is
     # recorded here, and rendered and kept by the job's last step, as every
