@@ -150,7 +150,10 @@ TRUNCATE). The witness saw 31,000–53,000 log resets per run.
 ## What it is not
 
 - **Not a feed.** The witness says a table changed, not which rows. The feed
-  stays on stamps (D64), and so does a client's place in it.
+  stays on stamps (D64), and so does a client's place in it. What a feed
+  does about a write no stamp saw is the check in
+  [a-page-checked-against-its-stamps](a-page-checked-against-its-stamps.md)
+  (D72), for which the witness says when it may be skipped.
 - **Not new in kind.** Keeping a cache from the database's log rather than
   from triggers is how log-based caches work elsewhere. ReadySet keeps its
   caches from Postgres' and MySQL's replication streams

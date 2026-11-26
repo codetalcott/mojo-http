@@ -326,6 +326,16 @@ def one(port, db):
     check(mid["fills"] == before["fills"] + 1 and mid["unknown"] == before["unknown"] + 1,
           f"a schema change was not read again (fills {before['fills']} -> {mid['fills']},"
           f" unknown {before['unknown']} -> {mid['unknown']}): page 1 must be UNKNOWN")
+    # A restore through the backup API moves the schema version too, and no
+    # stamped write can move it back, so a moved schema version starts every
+    # client over (N57): the floor rises, and the page is rendered again
+    # under the new head, which its script carries.
+    check(mid["restores"] == before["restores"] + 1 and mid["raises"] == before["raises"] + 1,
+          f"a moved schema version did not raise the floor: {mid}")
+    resp, body = c.get("/notes")
+    check(resp.status == 200, f"the list after the raise answered {resp.status}")
+    page_tag = tag_of(resp)
+    mid = c.stats()
     write(db, "INSERT INTO elsewhere VALUES (1)")
     check(c.stats()["clock"] != mid["clock"], "a commit to another table did not move the clock: the next check is vacuous")
     resp, body = c.get("/notes", {"If-None-Match": page_tag})
@@ -375,14 +385,26 @@ def one(port, db):
     phase("what changed since")
     # --- the database remembers what changed -------------------------------------
     check(c.stats()["watched"], "the table is not watched")
-    all_ = c.changes(0)
-    check(not all_["reset"] and all_["head"] == c.stats()["head"], f"a delta from 0: head {all_['head']}")
-    living = [r for r in all_["rows"] if not r.get("gone")]
-    check(len(living) > LIST_PAGE and all(r["born"] for r in living), "from 0, on a table watched from its first row, a row that lives was not born")
+    # The server raised the floor as it started (a write while it was down
+    # passed every check), so a client from before starts over.
     con = sqlite3.connect(db, timeout=10)
-    held = {i: t for i, t in con.execute("SELECT id, title FROM notes")}
+    floor = con.execute("SELECT floor FROM m0_stamp").fetchone()[0]
     con.close()
-    check({r["id"]: r["title"] for r in living} == held, "the delta from 0 is not the table")
+    check(floor >= 1 and c.changes(0)["reset"], f"a client from before the start was not told to start over (floor {floor})")
+    all_ = c.changes(floor)
+    check(not all_["reset"] and all_["head"] == c.stats()["head"], f"a delta from the floor {floor}: head {all_['head']}")
+    living = [r for r in all_["rows"] if not r.get("gone")]
+    # The floor rose after some rows were made (the schema change above), so
+    # the delta from it is every row stamped above it, each `born` exactly
+    # when it was made above it: the paging phase's rows, more than a page.
+    con = sqlite3.connect(db, timeout=10)
+    want = {i: (t, b > floor) for i, t, b in con.execute(
+        "SELECT n.id, n.title, c.born FROM notes n JOIN m0_changes c ON c.tbl = 'notes' AND c.row = n.id"
+        " WHERE c.seq > ?", (floor,))}
+    con.close()
+    check(len(living) > LIST_PAGE, f"the delta from the floor holds {len(living)} rows, not more than a page")
+    check({r["id"]: (r["title"], r["born"]) for r in living} == want,
+          "the delta from the floor is not every row stamped above it, each born exactly when made above it")
     at = all_["head"]
     again = c.changes(at)
     check(again == {"since": at, "head": at, "reset": False, "rows": []}, f"a client that has everything was sent {again}")
@@ -562,7 +584,11 @@ def one(port, db):
     # Two ways any program gets past a trigger: a connection with triggers
     # turned off, and blob I/O. Neither moves a stamp, so a cache kept on
     # stamps would serve the old title. The list's cache is kept on the pages
-    # SQLite wrote (O32, D71), so both reach it.
+    # SQLite wrote (O32, D71), so both reach it; and the check finds each,
+    # so every client that held the old title starts over (N57, D72).
+    st = c.stats()
+    check(st["raises"] == 2 and st["mismatches"] == 0 and st["restores"] == 1 and st["checks"] > 0,
+          f"before any write no stamp saw, the check raised the floor but at the start and for the schema change, or never ran: {st}")
     check(hasattr(sqlite3.Connection, "setconfig") and hasattr(sqlite3.Connection, "blobopen"),
           f"this Python ({sys.version.split()[0]}) has no setconfig or blobopen: the phase needs 3.12")
     con = sqlite3.connect(db, timeout=10)
@@ -571,23 +597,55 @@ def one(port, db):
     resp, body = c.get("/notes")
     held = tag_of(resp)
     head = c.stats()["head"]
+    feed = Feed(port, since=head)
+    feed.quiet(0.2)
+
+    def stamped():
+        """The last stamp a row was given. The head is no measure here: the
+        loop's tick may raise the floor, which moves it, between a write and
+        the question."""
+        con = sqlite3.connect(db, timeout=10)
+        try:
+            return con.execute("SELECT coalesce(max(seq), 0) FROM m0_changes").fetchone()[0]
+        finally:
+            con.close()
+    given = stamped()
     con = sqlite3.connect(db, timeout=10)
     con.setconfig(sqlite3.SQLITE_DBCONFIG_ENABLE_TRIGGER, False)
     con.execute("UPDATE notes SET title = 'no trigger saw this' WHERE id = ?", (first,))
     con.commit()
     con.close()
-    check(c.stats()["head"] == head, "a write with triggers turned off was stamped: the check is vacuous")
+    check(stamped() == given, "a write with triggers turned off was stamped: the check is vacuous")
     resp, body = c.get("/notes", {"If-None-Match": held})
     check(resp.status == 200 and "no trigger saw this" in body, "a write with triggers turned off did not reach the list")
     held = tag_of(resp)
+    # No stamp saw it, so every client that held the old title starts over:
+    # the check raised the floor above them.
+    def floor_and_head():
+        con = sqlite3.connect(db, timeout=10)
+        try:
+            return con.execute("SELECT floor, seq FROM m0_stamp").fetchone()
+        finally:
+            con.close()
+    floor, now = floor_and_head()
+    check(now > head and floor == now and c.changes(head)["reset"],
+          f"a write with triggers turned off left a client at {head} its delta (floor {floor}, head {now})")
+    ev = feed.wait(what="the resync a write no stamp saw owes a subscriber")
+    check(ev["event"] == "resync" and ev["id"] == now and "no trigger saw this" in ev["data"],
+          f"a subscriber at {head} was sent {ev['event']} {ev['id']}, not the page whole at {now}")
+    feed.close()
+    head = now
     con = sqlite3.connect(db, timeout=10)
     with con.blobopen("notes", "title", first) as blob:
         blob.write(b"blob-rewritten here")
     con.commit()
     con.close()
-    check(c.stats()["head"] == head, "a blob write was stamped: the check is vacuous")
+    check(stamped() == given, "a blob write was stamped: the check is vacuous")
     resp, body = c.get("/notes", {"If-None-Match": held})
     check(resp.status == 200 and "blob-rewritten here" in body, "a title rewritten by blob I/O did not reach the list")
+    floor, now = floor_and_head()
+    check(now > head and floor == now and c.changes(head)["reset"],
+          f"a blob write left a client at {head} its delta (floor {floor}, head {now})")
 
     c.close()
     print("table_notes_probe one: OK")

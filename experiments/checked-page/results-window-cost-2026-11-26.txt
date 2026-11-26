@@ -1,0 +1,7 @@
+# 2026-11-26, mojo-http 8fbfa259 with the checked page as lifted, the comparison made below a raised floor too; Apple M4, macOS 27.2.1, Mojo 1.2.0
+# cost: 10000 rows, 1000 writes, one loop; sqlite 3.50.4, python 3.13.7
+# arm  round  after p50/p90 us   idle p50/p90 us   delta p50/p90 us   raises
+  main     0      76.0 /    83.2      49.9 /    54.5      51.1 /    56.3   0
+  C        0      97.4 /   103.3      50.0 /    53.7      50.6 /    54.8   1
+  C        1      96.7 /   100.2      49.8 /    52.2      50.2 /    52.8   1
+  main     1      75.6 /    78.9      49.5 /    52.2      50.6 /    53.5   0

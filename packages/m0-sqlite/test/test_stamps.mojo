@@ -24,6 +24,8 @@ from src import (
     stamp_of,
     stamp_floor,
     prune_stamps,
+    raise_floor,
+    raise_floor_within,
     cursor,
     advance,
     slowest_cursor,
@@ -323,6 +325,117 @@ def test_pruning_is_a_transaction_of_its_own() raises:
     refused = False
     try:
         _ = prune_stamps(bare, 1)
+    except:
+        refused = True
+    assert_true(refused)
+    assert_false(bare.in_transaction())
+    _cleanup(p)
+
+
+def test_a_raised_floor_puts_every_client_below_it() raises:
+    """The head moves past every stamp given and the floor to it; no
+    tombstone is touched, and a prune below it leaves it.
+
+    covers: O33
+    """
+    var p = _fresh("raise")
+    var db = _watched(p)
+    db.execute("INSERT INTO notes (slug) VALUES ('a'), ('b')")
+    db.execute("DELETE FROM notes WHERE id = 2")
+    assert_equal(stamp_head(db), 3)
+    var head = raise_floor(db)
+    # Past every stamp given, the floor with it: a client at 3 or below is
+    # below it, one at the new head is not. The head is the time in
+    # microseconds, so it is far past 3, and a JavaScript client reads it
+    # exactly.
+    assert_true(head > 3)
+    assert_true(head < 9007199254740992)
+    assert_equal(stamp_head(db), head)
+    assert_equal(stamp_floor(db), head)
+    # The tombstone is still there, and the next write is stamped one above
+    # the floor, so a client at the floor gets it.
+    assert_equal(_delta(db, 0), "1:1:1:0 2:3:2:1")
+    db.execute("INSERT INTO notes (slug) VALUES ('c')")
+    assert_equal(_delta(db, head), String("3:", head + 1, ":", head + 1, ":0"))
+    # A prune below it leaves it where it is, and a second raise lands past
+    # the first.
+    assert_equal(prune_stamps(db, 1), 0)
+    assert_equal(stamp_floor(db), head)
+    assert_true(raise_floor(db) > head + 1)
+    _cleanup(p)
+
+
+def test_a_raised_floor_lands_past_the_stamps_a_restore_took_back() raises:
+    """A backup restore brings the counter back while clients still stand
+    at stamps given after the backup. One past the restored counter would
+    be the very stamp such a client holds: neither below the floor nor
+    above the head, it would never start over (review, 2026-11-26).
+
+    covers: O33
+    """
+    var p = _fresh("raise_restore")
+    var db = _watched(p)
+    db.execute("INSERT INTO notes (slug) VALUES ('a')")
+    # The backup is taken here, at stamp 1. Two writes follow, and a client
+    # stands at 3.
+    db.execute("INSERT INTO notes (slug) VALUES ('b'), ('c')")
+    var client = stamp_head(db)
+    assert_equal(client, 3)
+    # The restore: the counter is the backup's again.
+    db.execute("UPDATE m0_stamp SET seq = 1 WHERE id = 0")
+    var head = raise_floor(db)
+    assert_true(head > client, "the raise landed at or below a stamp a client holds")
+    assert_equal(stamp_floor(db), head)
+    _cleanup(p)
+
+
+def test_a_raise_within_lands_with_what_the_caller_writes() raises:
+    """Inside the caller's transaction: rolled back with it, committed with
+    it, and opening none of its own.
+
+    covers: O33
+    """
+    var p = _fresh("raise_within")
+    var db = _watched(p)
+    db.execute("INSERT INTO notes (slug) VALUES ('a')")
+    var head = stamp_head(db)
+    db.begin_immediate()
+    db.execute("INSERT INTO notes (slug) VALUES ('beside')")
+    var raised = raise_floor_within(db)
+    assert_true(raised > head + 1)
+    assert_true(db.in_transaction(), "the raise ended the caller's transaction")
+    db.rollback()
+    assert_equal(stamp_floor(db), 0, "the raise outlived the caller's rollback")
+    assert_equal(stamp_head(db), head)
+    db.begin_immediate()
+    raised = raise_floor_within(db)
+    db.commit()
+    assert_equal(stamp_floor(db), raised)
+    _cleanup(p)
+
+
+def test_raising_the_floor_is_a_transaction_of_its_own() raises:
+    """Refused inside another transaction, and one that fails leaves none
+    open.
+
+    covers: O33
+    """
+    var p = _fresh("raise_txn")
+    var db = _watched(p)
+    db.begin()
+    var refused = False
+    try:
+        _ = raise_floor(db)
+    except:
+        refused = True
+    assert_true(refused, "raise_floor ran inside a transaction")
+    db.rollback()
+    assert_equal(stamp_floor(db), 0)
+    # One that raises (no stamps installed) leaves no transaction open.
+    var bare = open(_fresh("raise_bare"))
+    refused = False
+    try:
+        _ = raise_floor(bare)
     except:
         refused = True
     assert_true(refused)

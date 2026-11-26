@@ -28,6 +28,19 @@ default is listed under **Behaviour changes**
   - It sees every write path, a connection with triggers turned off and blob
     I/O included, which a stamp doesn't.
   - WAL mode only; it opens a read-only connection of its own.
+- **`m0_sqlite.raise_floor(db)`: every client starts over** (SPEC O33,
+  [DECISIONS](docs/DECISIONS.md) D72).
+  - The head moves past every stamp given and the floor up to it, in a
+    transaction of its own. It answers the new head.
+  - `raise_floor_within(db)` does the same inside the caller's write
+    transaction, so the raise lands with what the caller writes beside it.
+  - "Past every stamp given" includes stamps a backup restore took back.
+    The head lands on the current time in microseconds (at SQLite's
+    millisecond resolution), or one past itself if that is later. It stays
+    below 2^53, so JavaScript reads it exactly. A clock set back can land
+    it below stamps given since the last raise.
+  - For a program that saw a write no stamp recorded. Below the floor, no
+    delta is vouched for, whether it was pruned or raised.
 
 ### Fixed
 
@@ -44,6 +57,30 @@ default is listed under **Behaviour changes**
     descriptor per witness.
 
 ### Behaviour changes
+
+- **`apps/table_notes` starts every client over when a write no stamp saw
+  reaches its first 100 rows** (SPEC N57, D72).
+  - The table's own triggers keep a copy of each row's title
+    (`notes_seen`), so such a write leaves the two different in the file.
+  - Each answer that serves the first page or what changed, and the feed's
+    tick, compares the first 100 rows with their copies. A difference
+    raises the floor: `/notes/changes` answers `reset`, and the feed sends
+    `resync`.
+  - A restore puts rows and copies back together, so it is found from a
+    head below the highest a thread has read, or from a moved schema
+    version. **A migration moves the schema version too, and starts every
+    client over.**
+  - Each thread's state also raises the floor as it starts. **So a client
+    from before any restart starts over once, and `since=0` after a start
+    is `reset`.**
+  - A write no stamp saw to a row beyond the first 100 is not seen until
+    the row comes into them.
+  - A raise takes the write lock, so it waits up to the busy timeout for
+    another writer.
+  - `GET /notes/changes` is now registered with `add_write`, still on the
+    pool, since the check updates the thread's state.
+  - Measured on an Apple M4 at 10,000 rows: a write's `GET /notes` costs
+    about 30 µs more, and each write 2–6 µs more for its copy.
 
 - **A Mojo host view that answers `M0-Hold` is a 500, named on stderr**
   (SPEC E45). The hold instruction is m0serve's, and a view on a Mojo mount

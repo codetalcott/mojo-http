@@ -29,7 +29,9 @@ them with SQL:
         gone   1 once it is deleted (a tombstone, until pruned)
     m0_stamp(id = 0, seq, floor)
         seq    the last stamp given: where a client with everything stands
-        floor  tombstones at or below it were pruned
+        floor  below it, no delta is vouched for: tombstones at or below
+               it were pruned (`prune_stamps`), or somebody saw a write
+               no stamp did (`raise_floor`). A client below it starts over
     m0_cursors(name, seq)
         seq    the last stamp a named stage has acted on
 
@@ -282,10 +284,11 @@ def stamp_of(db: Connection, table: String) raises -> Int:
 
 
 def stamp_floor(db: Connection) raises -> Int:
-    """The stamp at or below which tombstones were pruned. A client that
-    stands lower may hold rows whose deletion is no longer recorded: it
-    is told to start over, not handed a delta. Read it in the snapshot
-    the delta is read in."""
+    """The stamp below which no delta is vouched for: tombstones at or
+    below it were pruned (`prune_stamps`), or a program saw a write no
+    stamp recorded (`raise_floor`). A client that stands lower is told to
+    start over, not handed a delta. Read it in the snapshot the delta is
+    read in."""
     var q = db.prepare("SELECT floor FROM m0_stamp WHERE id = 0")
     _ = q.step()
     return q.column_int(0)
@@ -327,6 +330,64 @@ def prune_stamps(db: Connection, below: Int) raises -> Int:
         raise e^
 
 
+def raise_floor(db: Connection) raises -> Int:
+    """Put every client below the floor, in one transaction of its own:
+    `raise_floor_within` between a `begin_immediate` and a commit. Raises
+    inside another transaction, and a raise leaves none open. Answers the
+    new head, which is the new floor."""
+    db.begin_immediate()
+    try:
+        var head = raise_floor_within(db)
+        db.commit()
+        return head
+    except e:
+        # As in `prune_stamps`: only an open transaction is rolled back,
+        # and the error raised is the one that stopped the raise.
+        if db.in_transaction():
+            try:
+                db.rollback()
+            except:
+                pass
+        raise e^
+
+
+def raise_floor_within(db: Connection) raises -> Int:
+    """Put every client below the floor, inside the write transaction the
+    caller opened (`begin_immediate`) and commits, so the raise and what
+    the caller writes beside it land together or not at all. The head
+    moves past every stamp given and the floor up to it: a client at any
+    stamp given before is told to start over, and one at the new head is
+    not. Opens no transaction; answers the new head. For a program that
+    saw the table change in a way no stamp recorded: a connection with
+    triggers turned off, blob I/O, a restore, a write while it was not
+    running.
+
+    "Past every stamp given" includes the stamps a backup restore took
+    back: the counter returns to the backup's, while clients still stand
+    at stamps given after it, and one past the restored counter could be
+    the very stamp a client holds -- neither below the floor nor above the
+    head, it would never start over. So the head lands on the current time
+    in microseconds since the Unix epoch (SQLite's clock has millisecond
+    resolution), or one past itself if that is later. That is past any
+    stamp given since the last raise unless more stamps were given than
+    microseconds passed, or the clock was set back since. Below 2^53, so a
+    JavaScript client reads it exactly, until the year 2255.
+
+    It reaches every program that compares a stamp with `stamp_floor`, not
+    only the one that raised it: a stage whose cursor is below it starts
+    over too (`advance`). After a write no stamp recorded, that is right,
+    since the stage missed it as well; after an application's raise as it
+    starts, the stage starts over for nothing, which is a cost of sharing
+    the file with one. Tombstones are not touched."""
+    db.execute(
+        "UPDATE m0_stamp SET seq = max(seq + 1,"
+        + " CAST((julianday('now') - 2440587.5) * 86400000000.0 AS INTEGER))"
+        + " WHERE id = 0"
+    )
+    db.execute("UPDATE m0_stamp SET floor = seq WHERE id = 0")
+    return stamp_head(db)
+
+
 def cursor(db: Connection, name: String) raises -> Int:
     """Where the stage called `name` stopped: the last stamp it acted on,
     0 for a stage with no place yet."""
@@ -352,8 +413,8 @@ def advance(db: Connection, name: String, seq: Int) raises:
     undo each other. A stage registers before its first read with
     `advance(db, name, 0)`, or `slowest_cursor` cannot protect it; one
     that starts over deletes its row and its outputs; one that finds its
-    cursor below `stamp_floor` at startup was pruned past, and starts
-    over.
+    cursor below `stamp_floor` at startup was pruned past, or had a floor
+    raised over it (`raise_floor`), and starts over.
     """
     # The check travels with the write. OR REPLACE rather than an
     # upsert: the package's floor is SQLite 3.20.

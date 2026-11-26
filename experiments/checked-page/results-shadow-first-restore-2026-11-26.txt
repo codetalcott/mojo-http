@@ -1,0 +1,16 @@
+# 2026-11-26, mojo-http 8fbfa259 with the checked page on a shadow table (notes_seen); Apple M4, macOS 27.2.1, Mojo 1.2.0
+# POST-HOC (outcome B): a backup restored while no server runs, then stamped writes past the clients' stamps; arm H, then S3 (no startup raise), which must fail
+# Hr restore sqlite 3.50.4 python 3.13.7
+{"rep": 0, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 1, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 2, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 3, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 4, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"raises": {"startup": 36, "mismatch": 0, "unverifiable": 0}}
+# S3r restore sqlite 3.50.4 python 3.13.7
+{"rep": 0, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 100}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 133)", "sse0: stale row 10 (held 't-cccc', truth 't-bbbb', render_head 120, head 133)", "sse0: stale row 18 (held 't-cccc', truth 't-aaaa', render_head 120, head 133)", "sse0: stale row 19 (held 't-aaaa', truth 't-cccc', render_head 120, head 133)"]}
+{"rep": 1, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 180}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 146)", "sse0: stale row 7 (held 't-aaaa', truth 't-bbbb', render_head 120, head 146)", "sse0: stale row 9 (held 't-bbbb', truth 't-aaaa', render_head 120, head 146)", "sse0: stale row 10 (held 't-cccc', truth 't-bbbb', render_head 120, head 146)"]}
+{"rep": 2, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 240}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 159)", "sse0: stale row 2 (held 't-cccc', truth 't-bbbb', render_head 120, head 159)", "sse0: stale row 5 (held 't-bbbb', truth 't-cccc', render_head 120, head 159)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 120, head 159)"]}
+{"rep": 3, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 270}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 172)", "sse0: stale row 2 (held 't-cccc', truth 't-bbbb', render_head 120, head 172)", "sse0: stale row 5 (held 't-bbbb', truth 't-cccc', render_head 120, head 172)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 120, head 172)"]}
+{"rep": 4, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 330}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 185)", "sse0: stale row 2 (held 't-cccc', truth 't-bbbb', render_head 120, head 185)", "sse0: stale row 5 (held 't-bbbb', truth 't-cccc', render_head 120, head 185)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 120, head 185)"]}
+{"raises": {"startup": 0, "mismatch": 0, "unverifiable": 0}}
