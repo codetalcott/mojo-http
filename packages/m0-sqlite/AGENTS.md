@@ -150,7 +150,7 @@ table. Seven rules:
 **The witness reads what SQLite wrote** (SPEC O32, D71;
 docs/notes/a-witness-for-a-table.md). `src/witness.mojo` answers whether any
 page of some tables was written since the last look, from the wal-index
-header and the frames' headers, with no SQL. Six rules:
+header and the frames' headers, with no SQL. Seven rules:
 
 - **`look` before the read transaction, `settle` after the rendering, and
   `settle` takes what `look` read.**
@@ -187,6 +187,20 @@ header and the frames' headers, with no SQL. Six rules:
   - What a kept rendering carries besides the rows (the stamp head in
     `table_notes`' script) is the caller's to keep current: watch every
     table whose writes it counts.
+- **The `-shm` descriptor is never closed.**
+  - A POSIX `close()` of any descriptor of a file drops every lock the
+    process holds on that file. SQLite takes its WAL locks (each reader's
+    mark among them) on `-shm` (howtocorrupt.html §2.2).
+  - The handle is moved into an allocation never freed, so no destructor or
+    reassignment closes it. That costs one descriptor per witness for the
+    life of the process: make one per loop, not per request.
+  - It shipped closing it (#712). On Homebrew's SQLite a destroyed witness
+    then let another process's TRUNCATE checkpoint run under a live reader.
+    Apple's build hid it, and an independent review found it.
+  - `test_a_destroyed_witness_leaves_this_processs_locks_alone` can fail only
+    on a POSIX-locking build. CI's Linux leg is one, and so is
+    `M0_LIBSQLITE3=$(brew --prefix sqlite)/lib/libsqlite3.dylib` by hand.
+  - `-wal` takes no lock, and its handle closes as usual.
 - **The witness keeps a connection of its own.** It keeps `-wal` and `-shm`
   from being deleted at the last close, and maps the pages (`dbstat`) in its
   own read transaction, begun after the look. Do not drop it for a caller's

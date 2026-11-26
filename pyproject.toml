@@ -1099,11 +1099,12 @@ deps = ["build-sqlite"]
 help = "Revert each scalar-function and one-image rule of m0-sqlite; every one must be caught"
 cmd = "python3 scripts/sqlite_function_sabotage.py"
 
-# The table witness's seven rules (SPEC O32): the order, a reset log, page 1,
-# the tables' own pages, and three about naming a table (as SQLite names it;
-# a name no table answers to; a table with no pages). Each is reverted by an
-# exact line of witness.mojo against test_witness.mojo. About two minutes,
-# seven `mojo run`s, so it sits in test-gates after test-sqlite.
+# The table witness's eight rules (SPEC O32): the order, a reset log, page 1,
+# the tables' own pages, three about naming a table (as SQLite names it; a
+# name no table answers to; a table with no pages), and the -shm descriptor
+# never closed (Linux only: Apple's libsqlite3 keeps its locks across it).
+# Each is reverted by an exact line of witness.mojo against test_witness.mojo.
+# About two minutes, so it sits in test-gates after test-sqlite.
 [tool.poe.tasks.sabotage-witness]
 help = "Revert each rule of m0-sqlite's table witness; every one must be caught"
 cmd = "python3 scripts/witness_sabotage.py"

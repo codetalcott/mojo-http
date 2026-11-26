@@ -29,6 +29,20 @@ default is listed under **Behaviour changes**
     I/O included, which a stamp doesn't.
   - WAL mode only; it opens a read-only connection of its own.
 
+### Fixed
+
+- **A destroyed `TableWitness` no longer drops this process's SQLite locks**
+  (SPEC O32).
+  - The witness closed its `-shm` descriptor when it was destroyed. A POSIX
+    close of any of a file's descriptors drops every lock the process holds
+    on that file, SQLite's WAL locks included.
+  - On a POSIX-locking libsqlite3 (Ubuntu's, Debian's, Homebrew's), another
+    process could then run a TRUNCATE checkpoint under a reader that was
+    still reading. That is the corruption SQLite's "How To Corrupt" page
+    describes. Apple's libsqlite3 is not affected.
+  - The descriptor is now kept for the life of the process, which costs one
+    descriptor per witness.
+
 ### Behaviour changes
 
 - **A Mojo host view that answers `M0-Hold` is a 500, named on stderr**

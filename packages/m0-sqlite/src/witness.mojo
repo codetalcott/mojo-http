@@ -86,6 +86,19 @@ embeds something the witness doesn't watch, such as the stamp head, which
 counts every watched table's writes, keeps its old value. Watch every table
 whose writes that value counts, or render it apart.
 
+**The `-shm` descriptor is never closed.** A POSIX `close()` of any
+descriptor of a file drops every lock this process holds on that file,
+SQLite's own included (howtocorrupt.html §2.2). SQLite takes its WAL locks,
+the readers' marks among them, on `-shm`, so closing the witness's copy
+would let another process truncate the log under a reader that is still
+reading. Measured: on Homebrew's SQLite a witness destroyed beside an open
+read transaction let another process's `wal_checkpoint(TRUNCATE)` complete,
+`(0, 0, 0)`, where with the witness kept it answered busy. Apple's own
+build doesn't show it. So `-shm`'s handle is moved into an allocation that
+is never freed, and its descriptor stays open for the life of the process:
+one per witness. Make one per loop, not one per request. `-wal` takes no
+lock and is closed as usual.
+
 **Limits:**
 - WAL mode, on one host: it reads the two files.
 - Frequent checkpoints reset the log, and each reset is one UNKNOWN.
@@ -98,6 +111,7 @@ from std.collections.span import Span
 from std.ffi import c_int, external_call
 from std.io.file import FileHandle
 from std.memory import Pointer
+from std.memory.alloc import unsafe_alloc
 
 from .conn import Connection, open_readonly
 
@@ -201,7 +215,9 @@ struct TableWitness(Movable):
     var _db: String
     var _tables: List[String]
     var _conn: Connection
-    var _shm: FileHandle
+    var _shm: Int
+    """`-shm`'s descriptor, -1 until opened. Its handle lives in an allocation
+    never freed, so it is never closed: see the module docstring."""
     var _wal: FileHandle
     var _open: Bool
     var _pages: List[Bool]
@@ -232,7 +248,7 @@ struct TableWitness(Movable):
         self._conn = open_readonly(db_path)
         _ = self._conn.data_version()
         _ = self._conn.query_scalar("SELECT count(*) FROM sqlite_schema")
-        self._shm = FileHandle()
+        self._shm = -1
         self._wal = FileHandle()
         self._open = False
         self._pages = List[Bool]()
@@ -261,8 +277,16 @@ struct TableWitness(Movable):
         open they are not deleted."""
         if self._open:
             return True
+        if self._shm < 0:
+            try:
+                var handle = FileHandle(self._db + "-shm", "r")
+                var kept = unsafe_alloc[FileHandle](count=1)
+                kept.unsafe_write(handle^)
+                self._shm = kept[].handle
+            except:
+                self._why = String("no -shm (not WAL mode, or locking_mode=EXCLUSIVE)")
+                return False
         try:
-            self._shm = FileHandle(self._db + "-shm", "r")
             self._wal = FileHandle(self._db + "-wal", "r")
         except e:
             self._why = String("no -shm or -wal (not WAL mode, or locking_mode=EXCLUSIVE): ", e)
@@ -272,7 +296,7 @@ struct TableWitness(Movable):
 
     def _position(mut self) -> WalPosition:
         for _ in range(1000):
-            if _pread(self._shm.handle, self._header, _HEADER_BYTES, 0) < _HEADER_BYTES:
+            if _pread(self._shm, self._header, _HEADER_BYTES, 0) < _HEADER_BYTES:
                 self._why = String("-shm shorter than a wal-index header")
                 return WalPosition.unusable()
             var p = parse_wal_index_header(Span(self._header))

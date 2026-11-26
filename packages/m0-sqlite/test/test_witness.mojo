@@ -12,6 +12,8 @@ from std.ffi import external_call, c_int
 from std.os import remove, mkdir, path
 from std.testing import assert_equal, assert_true, assert_false, TestSuite
 
+from src.ffi import c_string
+from src.lib import CStr, as_cstr
 from src import (
     Connection,
     open,
@@ -351,6 +353,66 @@ def test_a_value_rewritten_in_its_overflow_pages_is_changed() raises:
     f.w.execute("UPDATE notes SET title = '" + other + "' WHERE id = 10")
     _expect(f, CHANGED, "a same-size rewrite of a value in overflow pages")
     _ = f^
+    _cleanup(p)
+
+
+def _checkpoint_from_another_process(db_path: String) -> Int:
+    """`wal_checkpoint(TRUNCATE)` in a fresh process: CPython's sqlite3, exec'd by
+    `system(3)`, never a fork (a child forked beside open connections inherits
+    SQLite's lock tables for the file). Answers its busy flag. 1 means a reader
+    here still holds the log; 0 means the checkpoint took the log from under it;
+    -1 means that process failed."""
+    var cmd = String(
+        "python3 -I -c \"import sqlite3,sys; c=sqlite3.connect(sys.argv[1], timeout=0.2);"
+        " sys.exit(10 + c.execute('PRAGMA wal_checkpoint(TRUNCATE)').fetchone()[0])\" '",
+        db_path, "'",
+    )
+    var buf = c_string(cmd)
+    var status = Int(external_call["system", c_int, CStr](as_cstr(buf)))
+    _ = buf
+    var code = (status >> 8) & 0xFF
+    if code == 10:
+        return 0
+    if code == 11:
+        return 1
+    return -1
+
+
+def test_a_destroyed_witness_leaves_this_processs_locks_alone() raises:
+    """A POSIX `close()` of any descriptor of a file drops every lock the
+    process holds on it, SQLite's included. So a witness that closed its `-shm`
+    descriptor when destroyed would let another process truncate the log under
+    a reader here that is still reading (howtocorrupt.html §2.2).
+
+    The witness keeps that descriptor for the life of the process, so another
+    process's TRUNCATE checkpoint still waits for the reader. Apple's
+    libsqlite3 can't show the failure (its locks survived the close in every
+    run). Ubuntu's, CI's Linux leg, and Homebrew's can: there the destroyed
+    witness let the checkpoint complete, (0, 0, 0).
+
+    covers: O32
+    """
+    var p = _fresh("locks")
+    var w = open(p)
+    w.execute("CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT); INSERT INTO notes (title) VALUES ('a')")
+    var r = open_readonly(p)
+    r.begin()
+    _ = r.query_scalar("SELECT count(*) FROM notes")
+    w.execute("INSERT INTO notes (title) VALUES ('b')")
+    assert_equal(
+        _checkpoint_from_another_process(p), 1,
+        "control: another process's checkpoint did not wait for this reader, so the test proves nothing",
+    )
+    var witness = TableWitness(p, ["notes"])
+    _ = witness.look()
+    _ = witness^
+    assert_equal(
+        _checkpoint_from_another_process(p), 1,
+        "a TRUNCATE checkpoint ran under a live reader once a witness was destroyed: its close dropped this process's locks",
+    )
+    r.commit()
+    r.close()
+    w.close()
     _cleanup(p)
 
 

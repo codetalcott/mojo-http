@@ -22,7 +22,11 @@ words:
   for every write: `"Notes"` looked up in `dbstat` as given did exactly that
   (review, 2026-11-25).
 
-About two minutes: seven `mojo run`s of one test file.
+- **the `-shm` descriptor is never closed.** A POSIX close of any of a file's
+  descriptors drops every lock the process holds on it, SQLite's included.
+  This one runs on Linux only: Apple's libsqlite3 kept its locks in every run.
+
+About two minutes: eight `mojo run`s of one test file (seven on macOS).
 
     python3 scripts/witness_sabotage.py
     python3 scripts/witness_sabotage.py --only order
@@ -80,6 +84,18 @@ RULES = [
         "                if not named.step():\n",
         "                if not named.step() and False:\n",
         expect="test_a_table_is_named_as_sqlite_names_it",
+    ),
+    rule(
+        "locks: the -shm descriptor is never closed, which would drop this process's locks (O32)",
+        WITNESS,
+        "    def last_unknown(self) -> String:\n",
+        "    def __deinit__(deinit self):\n"
+        "        _ = external_call[\"close\", c_int](c_int(self._shm))\n\n"
+        "    def last_unknown(self) -> String:\n",
+        # Apple's libsqlite3 keeps its locks across another descriptor's close,
+        # so only a POSIX-locking build (Ubuntu's, Homebrew's) can show it.
+        only_on="Linux",
+        expect="test_a_destroyed_witness_leaves_this_processs_locks_alone",
     ),
     rule(
         "own pages: a frame of the tables' pages is CHANGED (O32)",
