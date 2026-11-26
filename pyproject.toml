@@ -189,7 +189,7 @@ echo "all apps built; datastar_todo links no libsqlite3"
 # modules are only ever reached by that name. apps/blobs is the first.
 [tool.poe.tasks.test-apps]
 help = "Test the example apps' own modules (apps/*/test/test_*.mojo)"
-shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar -I apps/ \"$f\" || exit 1; done"
+shell = "for f in apps/*/test/test_*.mojo; do mojo run -I packages/m0-core -I packages/m0-http -I packages/m0-datastar -I packages/m0-sqlite -I apps/ \"$f\" || exit 1; done"
 
 # Built as one program and run once per file, as `test-http` is (its
 # comment says why).
@@ -1109,6 +1109,13 @@ cmd = "python3 scripts/sqlite_function_sabotage.py"
 help = "Revert each rule of m0-sqlite's table witness; every one must be caught"
 cmd = "python3 scripts/witness_sabotage.py"
 
+# The table notes app's check (N57) and `raise_floor` (O33): eighteen rules,
+# each reverted alone, each caught by the test that claims it. In
+# test-gates beside the witness's, whose rules it builds on.
+[tool.poe.tasks.sabotage-checked-page]
+help = "Revert each rule of table_notes' check and of raise_floor; every one must be caught"
+cmd = "python3 scripts/checked_page_sabotage.py"
+
 # verify-vtab-layout runs first: if the struct offsets are wrong, the vtab
 # tests below fail in confusing ways or pass by luck, and the offsets are the
 # more fundamental claim.
@@ -1278,7 +1285,7 @@ default_item_type = "ref"
 # `build-all`.
 [tool.poe.tasks.test-gates]
 help = "test-all's second half: the shim's rules, the phase stamps, m0-sqlite and its sabotage, and the compile gates (CI's unit-gates job)"
-sequence = ["test-shim", "test-wheel-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-witness", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
+sequence = ["test-shim", "test-wheel-shim", "check-phase-stamps", "fork-lint", "test-sqlite", "sabotage-vtab", "check-sqlite-function", "sabotage-sqlite-function", "sabotage-witness", "sabotage-checked-page", "sabotage-views", "check-mojoc-trait", "check-app-vocabulary", "check-keepalive-barrier", "check-copyback", "check-zero-alloca", "build-apps", "build-serve"]
 default_item_type = "ref"
 
 # --- Serve -----------------------------------------------------------------
@@ -10819,6 +10826,7 @@ echo "smoke-table-notes OK"
 python3 scripts/emit.py --covers N48 --task smoke-table-notes
 python3 scripts/emit.py --covers N49 --task smoke-table-notes
 python3 scripts/emit.py --covers N50 --task smoke-table-notes
+python3 scripts/emit.py --covers N57 --task smoke-table-notes
 """
 
 # --- Benchmarks ------------------------------------------------------------

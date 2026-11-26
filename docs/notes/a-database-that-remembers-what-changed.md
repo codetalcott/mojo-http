@@ -63,7 +63,11 @@ CPython's SQLite:
   a clock for a table, where `data_version` is the database's.
 
 `prune_stamps(db, below)` forgets tombstones and raises a floor; a client
-below the floor is told to start over.
+below the floor is told to start over. `raise_floor(db)` (from 2026-11-25)
+raises it over every client without forgetting anything, for a program
+that saw a write no stamp recorded. So the floor's meaning is wider than
+pruning: below it, no delta is vouched for (SPEC O33; D72,
+[a-page-checked-against-its-stamps](a-page-checked-against-its-stamps.md)).
 
 ### The counter is a row
 
@@ -119,8 +123,10 @@ place.
 
 The list's cache stays on the clock. (From 2026-11-25 it also asks a
 table witness whether `notes`' pages were written, and still never a stamp:
-D71, [a-witness-for-a-table](a-witness-for-a-table.md).) A stamp can be got
-past (the two
+D71, [a-witness-for-a-table](a-witness-for-a-table.md). And a client holding a
+row such a write changed starts over: D72,
+[a-page-checked-against-its-stamps](a-page-checked-against-its-stamps.md).) A
+stamp can be got past (the two
 traps below) and `data_version` cannot, so a rendering keyed on stamps
 would be as fragile as the triggers, to spare one rendering when another
 table commits.

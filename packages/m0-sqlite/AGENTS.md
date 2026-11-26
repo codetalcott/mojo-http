@@ -115,7 +115,7 @@ most:
 **Stamps say what changed; the clock says that something did** (SPEC
 O26–O27, D63–D64; docs/notes/a-database-that-remembers-what-changed.md).
 `src/stamps.mojo` is SQL and nothing else: two tables and four triggers a
-table. Seven rules:
+table. Eight rules:
 
 - **`m0_changes` and `m0_stamp` are a contract.** Programs that are not
   Mojo read them, so a column renamed is a break for somebody's Python.
@@ -143,6 +143,16 @@ table. Seven rules:
   changed is the witness's to say (below), never a stamp's.
 - **`stamp_of` can go down** when the tombstone that held it is pruned:
   compared for equality, like the clock.
+- **The floor means "below here, no delta is vouched for".**
+  `prune_stamps` raises it after forgetting tombstones. `raise_floor`
+  raises it when a program saw a write no stamp recorded (O33, D72).
+  - Either reaches every program that compares a stamp with it, so every
+    client starts over: never lower it.
+  - `raise_floor` moves the head too, so a client at the new head is at
+    the floor, not below it. A floor set by hand to the old head would
+    leave the clients at that head their stale rows.
+  - Use `raise_floor_within` when something must land with the raise in
+    one transaction; `table_notes` sets its copies so.
 - **A delta is whole.** `born` says a client at N lacks a row only when N
   was the head of a snapshot it has all of, so nothing here offers a
   LIMIT, and an application does not add one.

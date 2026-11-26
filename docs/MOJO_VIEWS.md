@@ -308,7 +308,8 @@ q.bind_int(1, since)
   The server keeps nothing for it, so any thread answers.
 - A client at stamp N has a row when `born <= N`. Send what is above a
   stamp whole: the rule holds only for a stamp that ended an answer.
-- `prune_stamps` forgets deleted rows up to a stamp. A client below
+- `prune_stamps` forgets deleted rows up to a stamp, and `raise_floor`
+  puts every client below the floor at once. A client below
   `stamp_floor`, or above `stamp_head`, is told to read everything again.
   Read the floor, the head and the rows in one read transaction.
 - A row that was in the table before `watch` appears in no answer until
@@ -327,6 +328,13 @@ displaces is deleted unrecorded. A migration that rebuilds a table drops
 the triggers; ask `watched` at startup. The table's key is
 `INTEGER PRIMARY KEY` and the table is not `WITHOUT ROWID`. Because a
 stamp can be bypassed, keep `Cached` on the clock.
+
+A client holding a row that a bypass changed keeps its old title, since
+nothing stamps the row again. `apps/table_notes` keeps a copy of each title
+with triggers of its own (`notes_seen`), compares its first 100 rows with
+their copies in the snapshot each answer is read in, and raises the floor
+when they differ (SPEC N57), so every client starts over. Rows beyond those
+100 are not checked.
 
 `apps/table_notes` answers `GET /notes/changes?since=N` this way.
 
@@ -407,15 +415,21 @@ def refresh(mut self) raises:              # on the ViewState
     if now == self.clock and not self.feed.lagging():
         return
     self.clock = now
-    var head = stamp_head(self.reader)
-    for slot in self.feed.behind(head):
-        var at = self.feed.at(slot)
-        var to = at
-        var frames = delta_frames(self.reader, at, to)   # the application's
-        if to == at:
-            self.feed.skip(slot, head)
-        else:
-            _ = self.feed.send(slot, to, frames)
+    self.reader.begin()                    # one snapshot: head, floor, rows
+    try:
+        var head = stamp_head(self.reader)
+        for slot in self.feed.behind(head):
+            var at = self.feed.at(slot)
+            var to = at
+            var frames = delta_frames(self.reader, at, to)   # the application's
+            if to == at:
+                self.feed.skip(slot, head)
+            else:
+                _ = self.feed.send(slot, to, frames)
+        self.reader.commit()
+    except e:
+        self.reader.rollback()
+        raise e^
 
 def tick(mut self, now_ms: Int):           # the trait's: it does not raise
     try:

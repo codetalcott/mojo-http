@@ -45,7 +45,8 @@ may open, and the app is what that takes:
   with their titles, `born` when the client cannot have them, and the
   ones that are gone. A client keeps `head` and asks again from it; no
   loop keeps anything for it, so either loop answers. Below the floor
-  tombstones were pruned to, the answer is `reset`: read the list again.
+  (tombstones pruned, or a write no stamp saw: below), the answer is
+  `reset`: read the list again.
   The list's cache is never kept on a stamp, which a write can get past:
   a REPLACE without the pragma, a rebuilt table, a connection with
   triggers turned off, blob I/O. The clock says when to look, and the
@@ -63,6 +64,28 @@ may open, and the app is what that takes:
   page's script is one line: an `EventSource` from the stamp the fragment
   was rendered at, and `htmx.swap`. A fragment rendered again opens the
   feed again from its own stamp, so no row is appended twice.
+- **a write no stamp saw starts every client over.** A client holding a
+  row that such a write changed would keep its old title for good. The
+  table's own triggers keep a copy of each row's title (`notes_seen`) in
+  the transaction that writes the row, so such a write leaves the two
+  different, in the file. Every answer that serves the first page or
+  what changed, and the feed's tick, compares the first `CHECK_WINDOW`
+  rows (100) with their copies, in the snapshot the answer is read in;
+  any thread finds what any other served. A difference raises the floor
+  (`m0_sqlite.raise_floor_within`, D72), so every client starts over:
+  `reset` from `/notes/changes`, `resync` from the feed; the copies are
+  set to what the check saw in the same transaction. A restore puts rows
+  and copies back together, so it is found otherwise: a head below the
+  highest this thread has read, or a moved schema version, which the
+  backup API moves and no stamped write moves back (a migration moves it
+  too, and starts every client over as well). Each thread's state also
+  raises the floor once as it starts, for a restore made while no server
+  ran. A raise takes the write lock and waits for another writer up to
+  the busy timeout, on whichever thread found the difference: with no
+  pool threads, the loop waits with it. The check covers the window and
+  nothing else: a client also holds every row born since it rendered, and
+  a write no stamp saw to one of those beyond the window reaches it only
+  at the next reset, or when the row comes into the window.
 
 Nothing is shared between threads but the file. Each loop under
 `M0_THREADS` and each pool thread builds its own `Notes`, with its own
@@ -87,11 +110,12 @@ No session and so no CSRF token: `apps/fragment_notes` is the login, and
     DELETE /notes/:id        removes it; answers the list
     GET    /notes/changes    `?since=N`: the rows stamped above N, as JSON
     GET    /notes/events     SSE: the same rows as `<li>`s, as they change
-    GET    /stats            this loop's cache, witness and stamp:
+    GET    /stats            this thread's cache, witness, check and stamp:
                              {"worker","fills","clock","head","watched",
                               "subscribers","feed_sent","feed_refused",
                               "looks","unchanged","changed","unknown",
-                              "rows_rendered"}
+                              "rows_rendered","checks","mismatches",
+                              "restores","raises"}
     GET    /                 303 to /notes
     GET    /health           {"status":"ok"}
 
@@ -138,6 +162,8 @@ from m0_sqlite import (
     UNCHANGED,
     install_stamps,
     open,
+    raise_floor,
+    raise_floor_within,
     open_readonly,
     stamp_floor,
     stamp_head,
@@ -173,11 +199,59 @@ comptime LIST_PAGE = 50
 """Rows a list renders. The cache holds one page, so what a change costs
 is a page and not the table."""
 
+comptime CHECK_WINDOW = 2 * LIST_PAGE
+"""Rows the check compares with their copies: the page and as many again.
+One join over them, per answer after a write."""
+
 comptime DB_ENV = "M0_DB"
 comptime DB_DEFAULT = "table_notes.db"
 
 
 # --- state --------------------------------------------------------------------
+
+
+comptime SEEN = """
+CREATE TABLE IF NOT EXISTS notes_seen(id INTEGER PRIMARY KEY, title TEXT NOT NULL);
+CREATE TRIGGER IF NOT EXISTS notes_seen_ai AFTER INSERT ON notes BEGIN
+    INSERT INTO notes_seen (id, title) SELECT new.id, new.title
+        WHERE NOT EXISTS (SELECT 1 FROM notes_seen WHERE id = new.id);
+END;
+CREATE TRIGGER IF NOT EXISTS notes_seen_au AFTER UPDATE ON notes BEGIN
+    UPDATE notes_seen SET title = new.title WHERE id = new.id AND old.id IS new.id;
+    DELETE FROM notes_seen WHERE id = old.id AND old.id IS NOT new.id;
+    INSERT INTO notes_seen (id, title) SELECT new.id, new.title
+        WHERE old.id IS NOT new.id
+        AND NOT EXISTS (SELECT 1 FROM notes_seen WHERE id = new.id);
+END;
+CREATE TRIGGER IF NOT EXISTS notes_seen_ad AFTER DELETE ON notes BEGIN
+    DELETE FROM notes_seen WHERE id = old.id;
+END;
+"""
+"""The copy of what the list renders, kept by the table's own triggers in
+the transaction that writes each row. A write no trigger sees -- a
+connection with triggers turned off, blob I/O -- leaves `notes` and
+`notes_seen` different in the file itself, where any thread or program
+can find it.
+
+Each trigger writes only the copy its own write accounts for, so a
+difference already there stays one: an insert never overwrites a copy
+(a row a bypass deleted, then put back under its id, still differs), and
+an update of the same key never creates one (a row a bypass inserted,
+then edited, is still missing its copy). Written as `stamps.mojo` writes
+its own: no upsert and no `OR REPLACE`, whose conflict clause the
+statement that fires the trigger would replace."""
+
+
+@fieldwise_init
+struct Seen(Copyable, Movable):
+    """A row of the window whose copy differs: what the check read of the
+    row (`there`, `title`) and of its copy (`copied`, `kept`)."""
+
+    var id: Int
+    var there: Bool
+    var title: String
+    var copied: Bool
+    var kept: String
 
 
 struct Notes(ViewState):
@@ -191,7 +265,8 @@ struct Notes(ViewState):
     var rows_head: Int
     """The stamp the kept page was rendered at: where its reader stands."""
     var witness: TableWitness
-    """Whether a page of `notes` was written since the kept page's look (O32)."""
+    """Whether a page of `notes` or `notes_seen` was written since the kept
+    page's look (O32)."""
     var items: Dict[Int, Item]
     """The kept page's rows, each rendering beside the title it came from."""
     var rows_rendered: Int
@@ -201,6 +276,22 @@ struct Notes(ViewState):
     var clock: Int
     """The clock the feed last fanned out at."""
     var worker: Int
+    var highest: Int
+    """The highest head this state has read. A head below it is a counter
+    a restore took back."""
+    var schema: Int
+    """`PRAGMA schema_version` at the last check, -1 before the first. A
+    restore through the backup API moves it, and stamped writes after it
+    cannot move it back, as they can carry the head past `highest`; a
+    migration moves it too, and one that rebuilds a table is a write no
+    stamp saw."""
+    var checks: Int
+    var mismatches: Int
+    var restores: Int
+    var raises: Int
+    var _now: Int
+    var _looked: Bool
+    var _answer: Int
 
     def __init__(out self, path: String, worker: Int, capacity: Int) raises:
         self.writer = open(path)
@@ -216,6 +307,16 @@ struct Notes(ViewState):
         )
         install_stamps(self.writer)
         watch(self.writer, "notes")
+        var made = self.writer.prepare(
+            "SELECT count(*) FROM sqlite_schema WHERE type = 'table' AND name = 'notes_seen'"
+        )
+        _ = made.step()
+        var fill = made.column_int(0) == 0
+        made.finalize()
+        self.writer.execute(SEEN)
+        if fill:
+            # Made now, so filled now, in the transaction that made it.
+            self.writer.execute("INSERT INTO notes_seen (id, title) SELECT id, title FROM notes")
         self.writer.commit()
         # A REPLACE that displaces a row deletes it with no delete trigger
         # unless the writing connection says this. The app has no REPLACE;
@@ -227,12 +328,25 @@ struct Notes(ViewState):
         self.reader = open_readonly(path)
         self.rows = Cached()
         self.rows_head = 0
-        self.witness = TableWitness(path, ["notes"])
+        self.witness = TableWitness(path, ["notes", "notes_seen"])
         self.items = Dict[Int, Item]()
         self.rows_rendered = 0
         self.feed = Feed(capacity)
         self.clock = 0
         self.worker = worker
+        self.highest = 0
+        self.schema = -1
+        self.checks = 0
+        self.mismatches = 0
+        self.restores = 0
+        self.raises = 0
+        self._now = 0
+        self._looked = False
+        self._answer = UNCHANGED
+        # A restore made while no server ran puts the rows, their copies and
+        # the counter back together, so nothing differs; a client from
+        # before may still hold what it replaced: every client starts over.
+        self.raise_floor(String("startup"))
 
     @staticmethod
     def make(ctx: HostContext) raises -> Self:
@@ -241,25 +355,35 @@ struct Notes(ViewState):
     def refresh(mut self) raises:
         """The feed's fan-out: when the clock has moved, or a subscriber is
         known to stand behind, bring each from where it stands to the head.
-        Most stand together, so one delta serves them all."""
+        Most stand together, so one delta serves them all. Checked first,
+        in the snapshot the deltas are read in."""
         var now = self.reader.data_version()
         if now == self.clock and not self.feed.lagging():
             return
+        self.look()
+        self.reader.begin()
+        try:
+            self.check_in_snapshot()
+            var head = stamp_head(self.reader)
+            var have = -1
+            var frames = String()
+            var to = 0
+            for slot in self.feed.behind(head):
+                var at = self.feed.at(slot)
+                if at != have:
+                    have = at
+                    to = at
+                    frames = delta_frames(self.reader, at, to)
+                if to == at:
+                    self.feed.skip(slot, head)
+                else:
+                    _ = self.feed.send(slot, to, frames)
+            self.reader.commit()
+        except e:
+            self.abandon()
+            raise e^
+        self.settle()
         self.clock = now
-        var head = stamp_head(self.reader)
-        var have = -1
-        var frames = String()
-        var to = 0
-        for slot in self.feed.behind(head):
-            var at = self.feed.at(slot)
-            if at != have:
-                have = at
-                to = at
-                frames = delta_frames(self.reader, at, to)
-            if to == at:
-                self.feed.skip(slot, head)
-            else:
-                _ = self.feed.send(slot, to, frames)
 
     def tick(mut self, now_ms: Int):
         try:
@@ -283,8 +407,8 @@ struct Notes(ViewState):
     def first_page(mut self) raises -> String:
         """The first page of the list. When the clock has moved since it was
         kept, the witness says whether `notes` can have changed. If not, the
-        kept page stands. If so, or when it can't tell, the page is read
-        again and only its changed rows are rendered.
+        kept page stands. If so, or when it can't tell, the page is checked
+        and read again, and only its changed rows are rendered.
 
         The clock is asked BEFORE the look, and the look BEFORE the read
         transaction. A commit between them then costs one more rendering, and
@@ -292,31 +416,225 @@ struct Notes(ViewState):
         `settle` covers no more than that.
 
         The kept page also carries the stamp head it was rendered at, in its
-        script. Only `notes` is watched, so the head moves only with a write
-        that wrote a page of `notes`, which the witness answers CHANGED. Watch
-        a second table and this page would keep an old head: watch it here
-        too."""
-        var now = self.reader.data_version()
-        if not self.rows.current(now):
-            var answer = self.witness.look()
-            if self.rows.filled and answer == UNCHANGED:
-                self.rows.clock = now
-            else:
-                # The stamp and the rows in one snapshot: a row born after
-                # the stamp would be in the page AND appended by the feed.
-                self.reader.begin()
-                try:
-                    self.rows_head = stamp_head(self.reader)
-                    var body = render_list_reusing(
-                        self.reader, 0, self.rows_head, self.items, self.rows_rendered
-                    )
-                    self.reader.commit()
-                    _ = self.rows.fill(now, body^)
-                except e:
-                    self.reader.rollback()
-                    raise e^
-            self.witness.settle()
+        script. A write that moves it without writing `notes` (a floor
+        raised by another thread or program) is found by the head the
+        answer's own snapshot reads, in `check_in_snapshot`, which renders
+        the page again under it."""
+        if self.rows.current(self.reader.data_version()):
+            return self.rows.body
+        self.look()
+        self.reader.begin()
+        try:
+            self.check_in_snapshot()
+            self.reader.commit()
+        except e:
+            self.abandon()
+            raise e^
+        self.settle()
         return self.rows.body
+
+    def answer_changes(mut self, since: Int) raises -> String:
+        """`GET /notes/changes`' answer for a client at `since`, read in the
+        snapshot its check was made in."""
+        self.look()
+        self.reader.begin()
+        var body: String
+        try:
+            self.check_in_snapshot()
+            body = _changes(self.reader, since)
+            self.reader.commit()
+        except e:
+            self.abandon()
+            raise e^
+        self.settle()
+        return body^
+
+    # --- the check -------------------------------------------------------
+    #
+    # A stamp says what a trigger saw, and a write can get past a trigger.
+    # The table's own triggers also keep a copy of what the list renders
+    # (`notes_seen`), and a write that gets past them leaves the two
+    # different, in the file. So the first `CHECK_WINDOW` rows are compared
+    # with their copies in the snapshot each answer is read in, by whichever
+    # thread answers; no thread's memory is involved. A difference raises
+    # the floor over every client, who starts over, and the copies are then
+    # set to what the check saw. The witness says when the check can be
+    # skipped.
+
+    def look(mut self) raises:
+        """Before the answer's read transaction: ask the clock, and when it
+        has moved, the witness (O32's order: the look before the read)."""
+        self._now = self.reader.data_version()
+        self._looked = not self.rows.current(self._now)
+        self._answer = UNCHANGED
+        if self._looked:
+            self._answer = self.witness.look()
+
+    def check_in_snapshot(mut self) raises:
+        """Inside the answer's read transaction: keep the page if no page of
+        `notes` or of its copy was written and the head is the kept page's,
+        else check and render it in this snapshot. The head is read here, so
+        a raise by another thread, which writes neither table, renders the
+        page again under the new head."""
+        var head = stamp_head(self.reader)
+        if (
+            self.rows.filled
+            and head == self.rows_head
+            and (not self._looked or self._answer == UNCHANGED)
+        ):
+            if self._looked:
+                self.rows.clock = self._now
+            return
+        self._check(head)
+
+    def settle(mut self) raises:
+        """After the answer's transaction committed."""
+        if self._looked:
+            self._looked = False
+            self.witness.settle()
+
+    def abandon(mut self):
+        """After the answer failed: no settle, so the next look sees the
+        same frames again."""
+        self._looked = False
+        try:
+            self.reader.rollback()
+        except:
+            pass
+
+    def _check(mut self, head: Int) raises:
+        self.checks += 1
+        var why = String()
+        var v = self.reader.prepare("PRAGMA schema_version")
+        _ = v.step()
+        var schema = v.column_int(0)
+        v.finalize()
+        var restored = head < self.highest or (self.schema >= 0 and schema != self.schema)
+        if head < self.highest:
+            why = String("the counter went back from ", self.highest, " to ", head, ": a restore")
+        elif restored:
+            why = String(
+                "the schema version moved from ", self.schema, " to ", schema,
+                ": a restore, or a migration",
+            )
+        var differ = List[Seen]()
+        var q = self.reader.prepare(
+            "SELECT n.id, n.title, s.title FROM notes n"
+            " LEFT JOIN notes_seen s ON s.id = n.id ORDER BY n.id LIMIT ?1"
+        )
+        q.bind_int(1, CHECK_WINDOW)
+        var shown = 0
+        var last = 0
+        while q.step():
+            shown += 1
+            last = q.column_int(0)
+            var title = q.column_text(1)
+            if q.is_null(2):
+                differ.append(Seen(last, True, title, False, String()))
+            else:
+                var copy = q.column_text(2)
+                if copy != title:
+                    differ.append(Seen(last, True, title^, True, copy^))
+        q.finalize()
+        # A copy whose row is gone, over the window's ids: all of them when
+        # the table is shorter than the window.
+        var g = self.reader.prepare(
+            "SELECT s.id, s.title FROM notes_seen s WHERE s.id <= ?1"
+            " AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = s.id) ORDER BY s.id"
+        )
+        g.bind_int(1, last if shown == CHECK_WINDOW else Int.MAX)
+        while g.step():
+            differ.append(Seen(g.column_int(0), False, String(), True, g.column_text(1)))
+        g.finalize()
+        if len(differ) > 0 and why.byte_length() == 0:
+            ref d = differ[0]
+            if not d.there:
+                why = String("mismatch: row ", d.id, " is gone, and its copy is not")
+            elif not d.copied:
+                why = String("mismatch: row ", d.id, " is there, and has no copy")
+            else:
+                why = String("mismatch: row ", d.id, "'s title is not its copy's")
+        if why.byte_length() > 0:
+            if restored:
+                self.restores += 1
+            else:
+                self.mismatches += 1
+            # The floor and the copies in one transaction: no other thread
+            # can check between them, and a failure leaves the difference
+            # in the file for the next check to find.
+            self.writer.begin_immediate()
+            try:
+                var raised = raise_floor_within(self.writer)
+                self._set_copies(differ)
+                self.writer.commit()
+                self._raised(raised, why)
+            except e:
+                if self.writer.in_transaction():
+                    try:
+                        self.writer.rollback()
+                    except:
+                        pass
+                raise e^
+        self.highest = max(self.highest, head)
+        self.schema = schema
+        # The stamp and the rows in one snapshot: a row born after the stamp
+        # would be in the page AND appended by the feed.
+        self.rows_head = head
+        var body = render_list_reusing(self.reader, 0, head, self.items, self.rows_rendered)
+        _ = self.rows.fill(self._now, body^)
+
+    def _set_copies(mut self, differ: List[Seen]) raises:
+        """Inside the writer's open transaction: set each differing copy to
+        what the check saw, where it is still what the check read. A
+        stamped write since, whose trigger made the copy agree, is left
+        alone; a write no trigger saw since is not taken in, since the copy
+        gets the title the check saw, not the table's now. Compared as
+        bytes: a title another program stored as a BLOB never equals the
+        TEXT bound here, and a copy that never matched would raise the
+        floor at every check."""
+        for ref d in differ:
+            if not d.there:
+                var x = self.writer.prepare(
+                    "DELETE FROM notes_seen WHERE id = ?1"
+                    " AND CAST(title AS BLOB) = CAST(?2 AS BLOB)"
+                )
+                x.bind_int(1, d.id)
+                x.bind_text(2, d.kept)
+                _ = x.step()
+                x.finalize()
+            elif not d.copied:
+                var x = self.writer.prepare(
+                    "INSERT INTO notes_seen (id, title) SELECT ?1, ?2"
+                    " WHERE NOT EXISTS (SELECT 1 FROM notes_seen WHERE id = ?1)"
+                )
+                x.bind_int(1, d.id)
+                x.bind_text(2, d.title)
+                _ = x.step()
+                x.finalize()
+            else:
+                var x = self.writer.prepare(
+                    "UPDATE notes_seen SET title = ?1 WHERE id = ?2"
+                    " AND CAST(title AS BLOB) = CAST(?3 AS BLOB)"
+                )
+                x.bind_text(1, d.title)
+                x.bind_int(2, d.id)
+                x.bind_text(3, d.kept)
+                _ = x.step()
+                x.finalize()
+
+    def raise_floor(mut self, why: String) raises:
+        """Every client starts over (`m0_sqlite.raise_floor`, O33): the feed
+        sends each subscriber `resync`, and `/notes/changes` answers
+        `reset`. In a transaction of its own."""
+        self._raised(raise_floor(self.writer), why)
+
+    def _raised(mut self, head: Int, why: String):
+        """Counted, and logged with the reason, on stdout."""
+        self.raises += 1
+        print(
+            String("table_notes: worker ", self.worker, " raised the floor to ", head, ": ", why),
+            flush=True,
+        )
 
 
 # --- templates -----------------------------------------------------------------
@@ -451,50 +769,45 @@ def delta_frames(db: Connection, since: Int, mut head: Int) raises -> String:
     """The feed's event for a subscriber at `since`: the rows stamped above
     it as `<li>`s with their `hx-swap-oob`, the new stamp as the id; or
     `resync` with the first page whole, below the floor or above the head.
-    One read transaction, so one snapshot. `head` is left where the
-    subscriber will stand, `since` when there is nothing for it."""
-    db.begin()
-    try:
-        var top = stamp_head(db)
-        var low = stamp_floor(db)
-        var out = String()
-        if since < low or since > top:
-            head = top
-            out = format_sse_event(top, "resync", render_list(db, 0, top))
-        else:
-            var q = db.prepare(
-                "SELECT c.row, c.seq, c.born, c.gone, n.title FROM m0_changes c"
-                " LEFT JOIN notes n ON n.id = c.row"
-                " WHERE c.tbl = 'notes' AND c.seq > ?1 ORDER BY c.seq"
-            )
-            q.bind_int(1, since)
-            var f = Frag(NOTES_ID)
-            var rows = String()
-            var born = String()
-            var last = since
-            while q.step():
-                last = q.column_int(1)
-                var id = q.column_int(0)
-                if q.column_int(3) == 1 or q.is_null(4):
-                    rows += el("li", attr("id", "n" + String(id)) + attr("hx-swap-oob", "delete"))
-                elif q.column_int(2) > since:
-                    born += render_item(f, id, q.column_text(4), String(""))
-                else:
-                    rows += render_item(f, id, q.column_text(4), String("true"))
-            _ = f^.finish()
-            if born.byte_length() > 0:
-                # The empty list's "none yet" goes when the first row comes;
-                # htmx skips a target that is not there.
-                rows += el("p", attr("id", "none-yet") + attr("hx-swap-oob", "delete"))
-                rows += el("ul", attr("id", LIST_ID) + attr("hx-swap-oob", "beforeend"), born)
-            head = last
-            if last > since:
-                out = format_sse_event(last, "notes", rows)
-        db.commit()
-        return out
-    except e:
-        db.rollback()
-        raise e^
+    Read in the caller's transaction, the one its check was made in, so one
+    snapshot. `head` is left where the subscriber will stand, `since` when
+    there is nothing for it."""
+    var top = stamp_head(db)
+    var low = stamp_floor(db)
+    var out = String()
+    if since < low or since > top:
+        head = top
+        out = format_sse_event(top, "resync", render_list(db, 0, top))
+    else:
+        var q = db.prepare(
+            "SELECT c.row, c.seq, c.born, c.gone, n.title FROM m0_changes c"
+            " LEFT JOIN notes n ON n.id = c.row"
+            " WHERE c.tbl = 'notes' AND c.seq > ?1 ORDER BY c.seq"
+        )
+        q.bind_int(1, since)
+        var f = Frag(NOTES_ID)
+        var rows = String()
+        var born = String()
+        var last = since
+        while q.step():
+            last = q.column_int(1)
+            var id = q.column_int(0)
+            if q.column_int(3) == 1 or q.is_null(4):
+                rows += el("li", attr("id", "n" + String(id)) + attr("hx-swap-oob", "delete"))
+            elif q.column_int(2) > since:
+                born += render_item(f, id, q.column_text(4), String(""))
+            else:
+                rows += render_item(f, id, q.column_text(4), String("true"))
+        _ = f^.finish()
+        if born.byte_length() > 0:
+            # The empty list's "none yet" goes when the first row comes;
+            # htmx skips a target that is not there.
+            rows += el("p", attr("id", "none-yet") + attr("hx-swap-oob", "delete"))
+            rows += el("ul", attr("id", LIST_ID) + attr("hx-swap-oob", "beforeend"), born)
+        head = last
+        if last > since:
+            out = format_sse_event(last, "notes", rows)
+    return out
 
 
 def events(
@@ -783,7 +1096,7 @@ def _changes(db: Connection, since: Int) raises -> String:
 
 
 def changes(
-    req: HTTPRequest, params: List[String], st: Notes
+    req: HTTPRequest, params: List[String], mut st: Notes
 ) raises -> HTTPResponse:
     """GET /notes/changes?since=N — the rows stamped above N.
 
@@ -801,21 +1114,15 @@ def changes(
         return reply.problem(
             400, "Invalid Stamp", "since is a stamp: decimal digits", NOTES_CHANGES
         )
-    st.reader.begin()
-    try:
-        var body = _changes(st.reader, since)
-        st.reader.commit()
-        return reply.json(200, "OK", body)
-    except e:
-        st.reader.rollback()
-        raise e^
+    return reply.json(200, "OK", st.answer_changes(since))
 
 
 def stats(
     req: HTTPRequest, params: List[String], st: Notes
 ) raises -> HTTPResponse:
-    """GET /stats — how often this loop rendered the list, what its witness
-    answered, and where the stamps stand, for the gate."""
+    """GET /stats — how often this thread's state rendered the list, what
+    its witness answered and its check found, and where the stamps stand,
+    for the gate."""
     return reply.json(
         200, "OK",
         String(
@@ -827,7 +1134,9 @@ def stats(
             ',"feed_sent":', st.feed.sent, ',"feed_refused":', st.feed.refused,
             ',"looks":', st.witness.looks, ',"unchanged":', st.witness.unchanged,
             ',"changed":', st.witness.changed, ',"unknown":', st.witness.unknown,
-            ',"rows_rendered":', st.rows_rendered, "}",
+            ',"rows_rendered":', st.rows_rendered,
+            ',"checks":', st.checks, ',"mismatches":', st.mismatches,
+            ',"restores":', st.restores, ',"raises":', st.raises, "}",
         ),
     )
 
@@ -853,7 +1162,7 @@ def note_urls() raises -> Views[Notes]:
     v.add_write("GET", NOTES, index)
     # Before the resource: the router answers with the first match. The
     # feed opens on the loop, whose state holds it (D32).
-    v.add_read("GET", NOTES_CHANGES, changes)
+    v.add_write("GET", NOTES_CHANGES, changes)
     v.add_write("GET", NOTES_EVENTS, events, on_loop=True)
     v.resource(
         NOTES, new=new_form, create=create, show=detail, edit=edit_form,
