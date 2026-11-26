@@ -98,6 +98,15 @@ look UNKNOWN. A check that passed because the witness never decided would
 have proved nothing, so the probe's verdict also required the witness to
 keep pages.
 
+**Its `-shm` descriptor is never closed.** A POSIX `close()` of any of a
+file's descriptors drops every lock the process holds on that file, and
+SQLite takes its WAL locks on `-shm` (howtocorrupt.html §2.2). The first
+version closed its copy when it was destroyed. On Homebrew's SQLite that let
+another process's `wal_checkpoint(TRUNCATE)` complete, `(0, 0, 0)`, under a
+reader that was still reading, where it must answer busy. Apple's build kept
+its locks and hid it. An independent review of the next design found it
+(2026-11-25). The handle now lives in an allocation that is never freed.
+
 **Its own connection.** The witness opens a read-only connection of its own:
 - **The files stay.** SQLite deletes `-wal` and `-shm` at the last close,
   and that is never the witness's connection, so it never reads files that
