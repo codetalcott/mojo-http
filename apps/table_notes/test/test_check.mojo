@@ -506,5 +506,37 @@ def test_a_floor_raised_elsewhere_renders_the_page_again() raises:
     _cleanup(p)
 
 
+# --- the feed ---------------------------------------------------------------
+
+
+def test_a_row_whose_id_came_back_is_deleted_before_it_is_appended() raises:
+    """A row deleted and inserted again under its id, both above a
+    subscriber's stamp, is one entry, born above it: the feed appends it,
+    and the page may still show the old row. So the event deletes the id
+    before the list's append, and htmx 4 applies them in that order (a
+    check in Chromium: `browser-table-notes`).
+
+    covers: N50
+    """
+    var p = _fresh("reborn")
+    var n = Notes(p, 0, 64)
+    _seed(p, 10)
+    var client = _head(p)
+    var w = open(p)
+    w.execute("DELETE FROM notes WHERE id = 5")
+    w.execute("INSERT INTO notes (id, title) VALUES (5, 'back again')")
+    var r = open(p)
+    r.begin()
+    var to = client
+    var event = delta_frames(r, client, to)
+    r.commit()
+    var gone = event.find('<li id="n5" hx-swap-oob="delete">')
+    var list = event.find('<ul id="notes-list" hx-swap-oob="beforeend">')
+    var again = event.find('<li id="n5">')
+    assert_true(gone >= 0, String("the event does not delete the old row: ", event))
+    assert_true(list > gone and again > list, String("the delete is not before the append: ", event))
+    _cleanup(p)
+
+
 def main() raises:
     TestSuite.discover_tests[__functions_in_module()]().run()

@@ -67,6 +67,7 @@ The pre-release gates, in the run's order:
 | [Datastar form in a browser](#datastar-form-in-a-browser) | `uv run poe browser-datastar-form` | Chromium | what the pinned Datastar bundle sends from a form | N12 |
 | [Notes login in a browser](#notes-login-in-a-browser) | `uv run poe browser-notes-login`, `uv run poe sabotage-notes-login` | Chromium | what htmx 4 sends behind the notes app's login | N13, N22 |
 | [Blobs demo in a browser](#blobs-demo-in-a-browser) | `uv run poe browser-blobs`, `uv run poe sabotage-blobs` | Chromium | the blobs demo's signals, clicks and reconnect | N16 |
+| [Table notes live in a browser](#table-notes-live-in-a-browser) | `uv run poe browser-table-notes` | Chromium | what htmx 4 makes of the table notes feed's events | N50 |
 | [SVG sandbox in three browsers](#svg-sandbox-in-three-browsers) | `uv run poe browser-svg-sandbox` | Chromium, Firefox and WebKit | SVGs draw, and their scripts do not run | J14 |
 | [Host sabotage](#host-sabotage) | `uv run --group max poe sabotage-host` | the `max` group; two runs on the reference Mac | each rule of the Mojo host | E21–E32, N18, N19 |
 | [m0 wheel sabotage](#m0-wheel-sabotage) | `uv run poe sabotage-m0-wheel` | — | each rule of the `m0` wheel's recipe and CLI | N23–N26 |
@@ -322,6 +323,19 @@ a gate to fail for every one: `smoke-blobs` for what reaches the wire, a twist a
 both kinds of pop among them, and the kernel's unit tests for the kernel's.
 Each rule rebuilds the app and reruns its gate, about six minutes in all
 (`--only unit` runs the kernel's in about fifteen seconds).
+
+### Table notes live in a browser
+
+`uv run poe browser-table-notes` (SPEC N50) drives `apps/table_notes`' list
+in Chromium under htmx 4.0.0 while another program writes the file. It
+counts the `li` for each of an update, an outside insert, a delete, a row
+deleted and inserted again under its id, and a REPLACE: one each, with the
+new title. Only a browser shows the order in which htmx applies an event's
+out-of-band parts. Before each born row came after a delete of its id, the
+id put back was two rows. Pre-release: it needs Chromium, and the page loads
+htmx from its CDN. About two seconds past the build on an Apple M4. It
+launches Chromium with no GPU process, which a sandboxed shell otherwise
+kills at startup.
 
 ### SVG sandbox in three browsers
 

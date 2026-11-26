@@ -44,6 +44,16 @@ default is listed under **Behaviour changes**
 
 ### Fixed
 
+- **A note whose id comes back is one row on a live page** (SPEC N50).
+  - A note deleted and inserted again under its id, both above a
+    subscriber's stamp, is one stamp entry, born above it. The feed
+    appended it while the page still showed the old row, so Chromium
+    showed two `<li>` with one id.
+  - Each row the feed appends now comes after an out-of-band delete of its
+    id, which htmx skips when the id is not on the page.
+  - `poe browser-table-notes` (pre-release, not in CI) counts the rows in
+    Chromium under htmx 4.0.0.
+
 - **A destroyed `TableWitness` no longer drops this process's SQLite locks**
   (SPEC O32).
   - The witness closed its `-shm` descriptor when it was destroyed. A POSIX

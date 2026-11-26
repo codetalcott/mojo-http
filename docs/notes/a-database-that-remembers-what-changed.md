@@ -232,6 +232,13 @@ the element of the same id, so new rows travel inside a
 target, swap: 'none'})` applies the out-of-band parts of `text` and
 nothing else, which is exactly the call an event wants.
 
+A third cost one later (2026-11-26). A row deleted and inserted again
+under its id, both above a subscriber's stamp, is one entry, born above
+it, so the feed appended it while the page still showed the old row: two
+`<li id="n…">` in Chromium. Each born row now comes after an out-of-band
+delete of its id, which htmx 4 applies first, and skips when the id is
+not on the page (`browser-table-notes`).
+
 Three more things the gate found:
 
 - **A client above the head is not behind.** The first `behind` named
