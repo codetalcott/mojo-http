@@ -495,19 +495,27 @@ def one(port, db):
     write(db, "INSERT INTO notes (title, body) VALUES ('live from outside', '')")
     ev = feed.wait(what="the outside insert")
     born = int(re.search(r'<li id="n(\d+)">', ev["data"]).group(1))
-    check(ev["event"] == "notes" and oob(ev) == [(born, "append")] and "live from outside" in ev["data"], f"the outside insert: {ev}")
+    # A row born above the subscriber's stamp comes after a delete of its id:
+    # an id can come back, and its old row may still be on the page.
+    check(ev["event"] == "notes" and oob(ev) == [(born, "delete"), (born, "append")] and "live from outside" in ev["data"], f"the outside insert: {ev}")
     check(ev["id"] == c.stats()["head"], "the event's id is not the stamp")
     check("hx-get=" in ev["data"] and "hx-delete=" in ev["data"], "an appended row lost its htmx attributes")
     resp, body = c.post("/notes", {"title": "live from the server", "body": ""})
     made2 = int(resp.getheader("Location").rsplit("/", 1)[1])
     ev = feed.wait(what="the server's insert")
-    check(oob(ev) == [(made2, "append")], f"the server's own insert: {oob(ev)}")
+    check(oob(ev) == [(made2, "delete"), (made2, "append")], f"the server's own insert: {oob(ev)}")
     write(db, "UPDATE notes SET title = 'renamed live' WHERE id = ?", (born,))
     ev = feed.wait(what="the outside update")
     check(oob(ev) == [(born, "true")] and "renamed live" in ev["data"], f"the update: {oob(ev)}")
     resp, body = c.ask("DELETE", f"/notes/{made2}", headers=PARTIAL)
     ev = feed.wait(what="the delete")
     check(oob(ev) == [(made2, "delete")], f"the delete: {oob(ev)}")
+    # The id comes back, from another program: born again above the
+    # subscriber's stamp, after a delete of the row the page may still show.
+    write(db, "INSERT INTO notes (id, title, body) VALUES (?, 'back again', '')", (made2,))
+    ev = feed.wait(what="the id that came back")
+    check(oob(ev) == [(made2, "delete"), (made2, "append")] and "back again" in ev["data"],
+          f"an id that came back: {oob(ev)}")
     at = ev["id"]
     # Nothing for what is not a change to the table.
     write(db, "INSERT INTO elsewhere VALUES (3)")
@@ -520,7 +528,8 @@ def one(port, db):
     write(db, "INSERT INTO notes (title, body) VALUES ('also while away', '')")
     back = Feed(c_port, last_event_id=at)
     ev = back.wait(what="the reconnect's delta")
-    check([w for _, w in oob(ev)] == ["true", "append"] and oob(ev)[0][0] == born, f"the reconnect's delta: {oob(ev)}")
+    check([w for _, w in oob(ev)] == ["true", "delete", "append"] and oob(ev)[0][0] == born
+          and oob(ev)[1][0] == oob(ev)[2][0], f"the reconnect's delta: {oob(ev)}")
     check(ev["id"] == c.stats()["head"], "the reconnect's event does not carry the head")
     back.quiet()
     back.close()
@@ -714,7 +723,7 @@ def loops(port, db):
         made = int(resp.getheader("Location").rsplit("/", 1)[1])
         for w, f in feeds.items():
             ev = f.wait(what=f"round {i} on loop {w}")
-            check(oob(ev) == [(made, "append")] and f"live round {i}" in ev["data"], f"round {i}: loop {w}'s feed: {oob(ev)}")
+            check(oob(ev) == [(made, "delete"), (made, "append")] and f"live round {i}" in ev["data"], f"round {i}: loop {w}'s feed: {oob(ev)}")
     for f in feeds.values():
         f.quiet(0.2)
         f.close()

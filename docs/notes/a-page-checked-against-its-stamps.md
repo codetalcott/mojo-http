@@ -250,10 +250,6 @@ loopback; the write is the update and its commit, by the writer:
   stamp. An insert can't be: a client that already rendered it would append
   it again. One reset for a rare event is the simpler answer, until a
   consumer pays for resets.
-- **Not a fix for a re-born id.** A REPLACE, or an insert that puts an id
-  back, is stamped `born`, and the feed appends a second `<li>` for an id
-  the client still shows. That predates this change, and the copy does not
-  see it.
 - **Not free.** The copy doubles the titles on disk, and every row write
   writes one more indexed row.
 - **Not tested on Linux under pressure, or under forked workers.** The unit

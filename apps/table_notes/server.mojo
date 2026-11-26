@@ -57,7 +57,8 @@ may open, and the app is what that takes:
   subscriber stands at a stamp, the loop's tick asks the clock, and when
   it has moved each subscriber is sent the rows stamped above where IT
   stands -- an `<li>` per row, `hx-swap-oob` saying replace or delete,
-  the new ones inside a `<ul id="notes-list" hx-swap-oob="beforeend">`
+  the new ones inside a `<ul id="notes-list" hx-swap-oob="beforeend">`,
+  each after a delete of its id, so an id that came back is one row
   -- as one event carrying the new stamp as its id. A reconnect
   with `Last-Event-ID` is the same question; below the floor, or above
   the head, the event is `resync` and carries the first page whole. The
@@ -795,6 +796,12 @@ def delta_frames(db: Connection, since: Int, mut head: Int) raises -> String:
             if q.column_int(3) == 1 or q.is_null(4):
                 rows += el("li", attr("id", "n" + String(id)) + attr("hx-swap-oob", "delete"))
             elif q.column_int(2) > since:
+                # Born above the subscriber's stamp, so it lacks the row --
+                # unless the id came back (an insert under a deleted row's
+                # id, a REPLACE): its old row may still be on the page. So
+                # the old one goes first, and the append is the one row;
+                # htmx skips a target that is not there.
+                rows += el("li", attr("id", "n" + String(id)) + attr("hx-swap-oob", "delete"))
                 born += render_item(f, id, q.column_text(4), String(""))
             else:
                 rows += render_item(f, id, q.column_text(4), String("true"))

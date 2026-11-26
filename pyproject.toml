@@ -1109,7 +1109,8 @@ cmd = "python3 scripts/sqlite_function_sabotage.py"
 help = "Revert each rule of m0-sqlite's table witness; every one must be caught"
 cmd = "python3 scripts/witness_sabotage.py"
 
-# The table notes app's check (N57) and `raise_floor` (O33): eighteen rules,
+# The table notes app's check (N57), its feed's re-born id (N50) and
+# `raise_floor` (O33): nineteen rules,
 # each reverted alone, each caught by the test that claims it. In
 # test-gates beside the witness's, whose rules it builds on.
 [tool.poe.tasks.sabotage-checked-page]
@@ -9167,6 +9168,20 @@ mojo build -I packages/m0-core/ -I packages/m0-http/ \
 # cache (`uv run --no-project --with playwright playwright install chromium`
 # once, if this says the browser is missing).
 uv run --no-project --with playwright python3 scripts/notes_login_browser.py --bin "$out/notes"
+"""
+
+# The table notes list, live in Chromium (SPEC N50): the smoke reads the
+# feed's events as text, and only a browser shows what htmx 4 makes of
+# them. A row whose id came back must be one row on the page, which is
+# the order of the event's delete and its append.
+[tool.poe.tasks.browser-table-notes]
+help = "PRE-RELEASE: the table notes list driven by Chromium under htmx 4.0.0 -- updates, inserts, deletes and an id that came back, each once on the page (SPEC N50; not in CI)"
+shell = """
+out=$(mktemp -d)
+trap 'rm -rf "$out"' EXIT
+mojo build -I packages/m0-core/ -I packages/m0-http/ -I packages/m0-sqlite/ \
+  apps/table_notes/server.mojo -o "$out/table_notes" || exit 1
+uv run --no-project --with playwright python3 scripts/table_notes_browser.py --bin "$out/table_notes"
 """
 
 # An SVG served from a static mount is a document that may not run (SPEC

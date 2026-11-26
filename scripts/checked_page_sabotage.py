@@ -29,10 +29,13 @@ claims it, which must fail in its own words:
 - **the head the answer's snapshot reads re-renders the page** after a
   raise elsewhere, which writes neither table.
 - **a raise at startup,** for a restore made while no server ran.
+- **and the feed's one rule the check leans on:** a row born above a
+  subscriber's stamp comes after a delete of its id (N50), since an id
+  that came back may still be on the page.
 - **`raise_floor` moves the floor, past every stamp given,** in m0-sqlite:
   past the counter a restore brought back, too.
 
-About two minutes on an Apple M4: fifteen `mojo run`s of the app's test
+About two minutes on an Apple M4: sixteen `mojo run`s of the app's test
 file, three of `test_stamps.mojo`.
 
     python3 scripts/checked_page_sabotage.py
@@ -176,6 +179,15 @@ RULES = [
         "",
         gate="app",
         expect="test_every_state_raises_the_floor_once_as_it_starts",
+    ),
+    rule(
+        "reborn: a row born above the stamp deletes its id before the append (N50)",
+        SERVER,
+        "                rows += el(\"li\", attr(\"id\", \"n\" + String(id)) + attr(\"hx-swap-oob\", \"delete\"))\n"
+        "                born += render_item(f, id, q.column_text(4), String(\"\"))\n",
+        "                born += render_item(f, id, q.column_text(4), String(\"\"))\n",
+        gate="app",
+        expect="test_a_row_whose_id_came_back_is_deleted_before_it_is_appended",
     ),
     rule(
         "floor: raise_floor puts the floor at the new head (O33)",
