@@ -1,0 +1,7 @@
+# 2026-11-27, the lift of the merged scans: main (origin/main b55eb0b5's apps/table_notes) against this tree (C), both built by build.py's mojo build; Apple M4, macOS 27.2.1, Mojo 1.2.0 (2016d0cd); the server on Apple's libsqlite3; load 2.84 2.51 2.17 at start
+# cost: 10000 rows, 1000 writes, one loop; sqlite 3.53.1, python 3.14.7
+# arm  round  after p50/p90 us   idle p50/p90 us   delta p50/p90 us   write p50/p90 us   raises
+  main     0     106.3 /   119.9      49.8 /    59.2      55.9 /    67.3      46.7 /    66.4   1
+  C        0      79.9 /    87.0      48.7 /    53.9      54.5 /    60.0      47.4 /    71.7   1
+  C        1      80.1 /    86.2      48.8 /    53.6      54.2 /    59.7      47.4 /    69.1   1
+  main     1     107.8 /   115.8      50.4 /    55.5      56.6 /    62.2      51.5 /    72.0   1

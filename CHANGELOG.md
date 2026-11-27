@@ -106,6 +106,22 @@ default is listed under **Behaviour changes**
   It reaches applications built with `m0` in its next release.
 ### Changed
 
+- **`apps/table_notes`' check reads the rows and their copies as two
+  ordered scans** (SPEC N57).
+  - The first 100 rows and their copies in `notes_seen` are read in id
+    order, on statements kept between answers, and merged as they are read.
+    A pair whose titles differ, a row with no copy at its id, and a copy
+    whose row is gone are each a difference, as before.
+  - No row is probed for its copy, nor a copy for its row, and the window's
+    bound needs no subquery. The page is rendered from the rows the check
+    read.
+  - A write's `GET /notes` goes from 106.3–107.8 µs to 79.9–80.1 (Apple M4,
+    `experiments/checked-page/results-merge-cost-2026-11-27.txt`).
+  - What the check finds is unchanged. The pressure harness passes as
+    before, on macOS and once on Linux, and every sabotage of it fails.
+    `poe sabotage-checked-page` has 23 rules, among them one for each of
+    the merge's three findings.
+
 - **`apps/table_notes` renders its first page only when `notes` changed**
   (SPEC N48, D71).
   - On a moved clock it asks a `TableWitness`. A commit to another table now

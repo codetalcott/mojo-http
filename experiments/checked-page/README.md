@@ -10,6 +10,10 @@
 - **Measured on:** Apple M4, macOS 27.2.1, Mojo 1.2.0, 2026-11-26. The server
   used Apple's libsqlite3; the clients and writers ran in CPython 3.13.7 with
   its SQLite 3.50.4.
+  - The merged scans (2026-11-27) ran on the same M4, with CPython 3.14.7
+    and its SQLite 3.53.1.
+  - They also ran once on Linux: a Linode `g6-dedicated-4`, Ubuntu 24.04,
+    the server on Ubuntu's libsqlite3 3.45.1.
 
 ## The question, written down before each design's first run
 
@@ -34,7 +38,7 @@ page. Each sabotage had to fail.
 
 | file | what it is |
 |---|---|
-| `build.py` | builds the server and four sabotages from a source tree: S1 the comparison always matches; S2 a stamped update leaves the copy alone; S3 no raise at startup; S4 a restore found by the head alone |
+| `build.py` | builds the server and seven sabotages from a source tree: S1 the comparison always matches; S2 a stamped update leaves the copy alone; S3 no raise at startup; S4 a restore found by the head alone; and one per finding of the merged scans: G1 a copy whose row is gone is ignored, G2 a row with no copy counts as matched, G3 a row and its copy are never compared |
 | `pressure.py` | runs a built server, clients (SSE and pollers), a thread of stamped writes with a rare bulk delete of 60 window rows, and a main thread of bypasses, checkpoints and client churn. It compares every client with the table every 50 steps. `restore` restores a backup while no server runs; `live-restore` restores one onto the running file |
 | `cost.py` | `main` against the check: 10,000 rows and 1,000 stamped writes. It times three requests and the write itself |
 
@@ -75,6 +79,25 @@ test and a sabotage rule.
 | `results-shadow-restore-2026-11-26.txt` | **a restore while no server ran:** 0 errors with the startup raise. Without it (S3), 13 stamped writes carried the head past the clients, and 100–330 covered rows were stale each time. With the raise, the head had already landed past every client's stamp, so no catch-up writes were made. **A restore onto the running file, then 13 stamped writes past the clients' stamps:** 0 errors, every raise the schema version's. With the restore found by the head alone (S4), 100–310 covered rows were stale |
 | `results-shadow-beyond-2026-11-26.txt` | chosen after the registered runs, every bypass beyond the window: 64 errors, all beyond, and 90 raises as rows came into the window |
 | `results-shadow-cost-2026-11-26.txt` | a write's `GET /notes` 75.5–75.9 µs against 106.2–106.5; the write itself 40.5–43.3 against 45.5–46.2; the idle page unchanged; `/notes/changes` 3 µs more |
+
+**The merged scans, lifted from a lab copy (2026-11-27).** The comparison
+reads the rows and their copies as two scans in id order and merges them,
+where the shadow table's design joined each row to its copy and probed for
+gone copies. This is what was run again on the lifted code, with the
+criteria above:
+
+| file | result |
+|---|---|
+| `results-merge-cost-2026-11-27.txt` | a write's `GET /notes`: `main` 106.3–107.8 µs against 79.9–80.1. The idle page was 1.1–1.6 µs faster and `/notes/changes` 1.4–2.4 µs, and the write within its noise |
+| `results-merge-pressure-2026-11-27.txt` | **passed** workloads 1–3 and both restores. 0 errors over 10 seeds of stamped writes (2,540, 9 of them bulk deletes) with no raise after startup. 0 covered errors over 60 seeds (2,260 bypasses, 1,944 raises, 5 errors beyond the window). Every restart and restore right; a live restore was found by the schema version in all 5 reps. **Every sabotage failed:** S1 1,527 covered errors; S2 83–102 false raises per seed; S3 and S4 100–330 stale covered rows; G1 22 covered errors on 4 of 5 seeds; G2 8 on 1 of 5; G3 397 on all 5 |
+| `results-merge-linux-2026-11-27.txt` | the same code on Linux, before the lift (its header says how it was built): the app's tests, the probe at one loop and at two, Chromium, and the pressure runs all passed, and every sabotage failed |
+
+**G2 is reached rarely.** All of the harness's bypassed inserts land beyond
+the window, because a new row's id is high. So a row with no copy inside the
+window comes up only by chance, on 1 seed in 5.
+`test_a_bypassed_insert_stays_a_difference_after_a_stamped_edit` is the rule
+that guards it every time, and `poe sabotage-checked-page` proves that it
+does (`uncopied`).
 
 **A discarded attempt.** The shadow table's first attempt at workload 2
 crashed on a harness race. A bypass picked a row the stamped writer had just

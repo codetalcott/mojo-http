@@ -1,0 +1,330 @@
+# 2026-11-27, the merged scans on Linux: a Linode g6-dedicated-4 (AMD EPYC 7713, 4 vCPUs), Ubuntu 24.04,
+# kernel 6.8.0-149; Mojo 1.2.0 (2016d0cd); the server on Ubuntu's libsqlite3 3.45.1 (3.45.1-1ubuntu2.11);
+# the clients in uv's CPython 3.13.15 with SQLite 3.53.1. The box lived 25 min and was deleted.
+#
+# Run from mojo-framework's lab copy of this app, before the lift: its server.mojo is byte-identical to
+# this tree's apps/table_notes/server.mojo, and it was built against mojo-http 2af8889c's packages, which
+# have no diff from this tree's base (b55eb0b5). The sabotages were the same edits as build.py's S1-S4 and
+# G1-G3. In order: the app's 17 tests; the table_notes probe at one loop and at two; a timing run (M is
+# 2af8889c's app, Wk the witness at 59dd367b with its statements kept, L the lab's previous design, T this
+# one; every after-write page compared with M's); table_notes_browser.py in Chromium; then the pressure
+# runs, judged by the same criteria as results-merge-pressure-2026-11-27.txt.
+#
+# The box is about 6x slower than an M4 on every path, the idle page included, which runs no SQL.
+# Compare arms within this run only.
+
+######## run.txt
+
+=== env (20:00:43, load 1.04 0.41 0.15)
+Linux 6.8.0-149-generic x86_64
+model name	: AMD EPYC 7713 64-Core Processor
+nproc 4
+Mojo 1.2.0 (2016d0cd)
+client sqlite 3.53.1 python 3.13.15
+Version: 3.45.1-1ubuntu2.11
+lrwxrwxrwx 1 root root      19 Nov 19 21:56 /lib/x86_64-linux-gnu/libsqlite3.so.0 -> libsqlite3.so.0.8.6
+-rw-r--r-- 1 root root 1468440 Nov 19 21:56 /lib/x86_64-linux-gnu/libsqlite3.so.0.8.6
+
+=== 1 lab-notes-test (20:00:43, load 1.04 0.41 0.15)
+    PASS [ 21.497 ] test_a_write_no_stamp_saw_raises_the_floor_over_every_client
+    PASS [ 21.877 ] test_stamped_writes_never_raise
+    PASS [ 21.196 ] test_any_state_finds_a_bypass_a_state_it_never_was_served
+    PASS [ 13.075 ] test_a_raise_sets_the_copies_to_what_the_check_saw
+    PASS [ 14.671 ] test_a_stamped_write_after_the_check_keeps_its_copy
+    PASS [ 13.262 ] test_a_bypass_after_the_check_is_not_taken_into_the_copy
+    PASS [ 11.717 ] test_a_bypassed_insert_stays_a_difference_after_a_stamped_edit
+    PASS [ 12.235 ] test_a_bypassed_delete_stays_a_difference_after_its_id_comes_back
+    PASS [ 27.769 ] test_a_bypassed_delete_is_found_by_the_copy_it_leaves
+    PASS [ 11.741 ] test_a_title_stored_as_bytes_is_answered_once
+    PASS [ 91.423 ] test_a_live_restore_is_found_after_the_head_climbs_back
+    PASS [ 13.710 ] test_a_counter_that_went_back_raises_the_floor
+    PASS [ 14.861 ] test_the_feed_and_the_changes_answer_check_first
+    PASS [ 217.371 ] test_a_raise_that_fails_loses_nothing
+    PASS [ 20.158 ] test_every_state_raises_the_floor_once_as_it_starts
+    PASS [ 10.891 ] test_a_floor_raised_elsewhere_renders_the_page_again
+    PASS [ 15.035 ] test_a_row_whose_id_came_back_is_deleted_before_it_is_appended
+Summary [ 552.497 ] 17 tests run: 17 passed , 0 failed , 0 skipped 
+run 1 rc 0
+
+=== 2 lab-notes-smoke (20:01:10, load 0.97 0.45 0.18)
+stop $pid || fail "the two-loop server exited $? on SIGTERM"
+
+echo "lab-notes-smoke OK"
+table_notes_probe one: OK
+table_notes_probe loops: OK
+lab-notes-smoke OK
+run 2 rc 0
+
+=== build arms (20:02:13, load 1.26 0.63 0.26)
+built M
+built Wk
+built L
+built T
+built TS1
+built TS2
+built TS3
+built TS4
+built TG1
+built TG2
+built TG3 (1 warnings)
+
+=== 3 timing (20:11:46, load 1.79 1.60 0.99)
+# 2026-11-27T20:11:46+0000: 10000 rows, 1000 iterations, one loop; client sqlite 3.53.1, python 3.13.15
+# arm round  write p50/p90   after-write p50/p90   idle p50/p90   delta p50/p90   after-other p50/p90   raises  other!=idle
+  M       0   765.0 /   914.8    607.8 /   705.4    317.7 /   395.3    337.5 /   436.3    395.5 /   474.4   1  0
+  Wk      0   694.6 /   889.9    424.5 /   495.9    303.3 /   359.2    331.8 /   403.4    351.0 /   409.5   0  0
+  L       0   738.0 /   957.2    538.2 /   603.6    318.2 /   378.8    360.5 /   422.5    382.6 /   444.6   1  0
+  T       0   719.9 /   901.4    461.3 /   520.7    285.3 /   341.9    304.2 /   356.2    354.1 /   412.8   1  0
+  T       1   855.4 /  1359.7    488.6 /   582.5    305.7 /   384.1    328.4 /   410.5    377.2 /   469.5   1  0
+  L       1   703.9 /   939.0    533.2 /   607.8    317.2 /   378.9    362.9 /   424.0    382.6 /   442.5   1  0
+  Wk      1   683.2 /   894.2    418.4 /   480.4    289.1 /   345.7    310.3 /   380.5    339.9 /   395.4   0  0
+  M       1   718.9 /   892.6    590.9 /   668.9    297.2 /   362.7    320.8 /   388.2    382.8 /   448.6   1  0
+# after-write pages against M's, the head's digits replaced
+  round 0 Wk: 0 of 1000 pages differ
+  round 0 L: 0 of 1000 pages differ
+  round 0 T: 0 of 1000 pages differ
+  round 1 Wk: 0 of 1000 pages differ
+  round 1 L: 0 of 1000 pages differ
+  round 1 T: 0 of 1000 pages differ
+# medians by round: M Wk L T
+  round 0 after  M=607.8  Wk=424.5  L=538.2  T=461.3
+  round 0 other  M=395.5  Wk=351.0  L=382.6  T=354.1
+  round 0 write  M=765.0  Wk=694.6  L=738.0  T=719.9
+  round 0 idle   M=317.7  Wk=303.3  L=318.2  T=285.3
+  round 0 delta  M=337.5  Wk=331.8  L=360.5  T=304.2
+  round 1 after  M=590.9  Wk=418.4  L=533.2  T=488.6
+  round 1 other  M=382.8  Wk=339.9  L=382.6  T=377.2
+  round 1 write  M=718.9  Wk=683.2  L=703.9  T=855.4
+  round 1 idle   M=297.2  Wk=289.1  L=317.2  T=305.7
+  round 1 delta  M=320.8  Wk=310.3  L=362.9  T=328.4
+run 3 rc 0
+
+=== 4 browser (20:12:14, load 1.45 1.54 0.99)
+chromium install rc 0
+table_notes_browser: OK
+run 4 T rc 0
+
+=== 5 pressure (20:13:12, load 1.28 1.46 0.99)
+1 | T | stamped | holds
+2 | T | bypass | holds
+3 | T | restart | holds
+4 | T | restore | holds
+5 | T | live-restore | holds
+6 | TS1 | bypass | failed, as required
+7 | TS2 | stamped | failed, as required
+8 | TS3 | restore | failed, as required
+9 | TS4 | live-restore | failed, as required
+10 | TG1 | bypass | failed, as required
+11 | TG2 | bypass | failed, as required
+12 | TG3 | bypass | failed, as required
+run 5 rc 0
+# run 1: T stamped, 10 seeds
+# T stamped sqlite 3.53.1 python 3.13.15
+# judged: holds (46 s)
+# run 2: T bypass, 60 seeds
+# T bypass sqlite 3.53.1 python 3.13.15
+# judged: holds (328 s)
+# run 3: T restart, 5 reps
+# T restart sqlite 3.53.1 python 3.13.15
+# judged: holds (5 s)
+# run 4: T restore, 5 reps
+# T restore sqlite 3.53.1 python 3.13.15
+# judged: holds (7 s)
+# run 5: T live-restore, 5 reps
+# T live-restore sqlite 3.53.1 python 3.13.15
+# judged: holds (7 s)
+# run 6: TS1 bypass, 5 seeds
+# TS1 bypass sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (23 s)
+# run 7: TS2 stamped, 5 seeds
+# TS2 stamped sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (75 s)
+# run 8: TS3 restore, 5 reps
+# TS3 restore sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (7 s)
+# run 9: TS4 live-restore, 5 reps
+# TS4 live-restore sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (7 s)
+# run 10: TG1 bypass, 5 seeds
+# TG1 bypass sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (23 s)
+# run 11: TG2 bypass, 5 seeds
+# TG2 bypass sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (23 s)
+# run 12: TG3 bypass, 5 seeds
+# TG3 bypass sqlite 3.53.1 python 3.13.15
+# judged: failed, as required (23 s)
+# runner done after 574 s
+
+=== done (20:22:46, load 0.14 0.38 0.62)
+
+######## results-pressure.txt
+# run 1: T stamped, 10 seeds
+# T stamped sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 246, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 23}
+{"seed": 2, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 239, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 0, "clients": 21}
+{"seed": 3, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 247, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 21}
+{"seed": 4, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 253, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 0, "clients": 21}
+{"seed": 5, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 244, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 15}
+{"seed": 6, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 244, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 0, "clients": 20}
+{"seed": 7, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 248, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 26}
+{"seed": 8, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 254, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 25}
+{"seed": 9, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 247, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 28}
+{"seed": 10, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 238, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 28}
+{"total": {}}
+# judged: holds (46 s)
+# run 2: T bypass, 60 seeds
+# T bypass sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {"extra/beyond": 1}, "detail": [], "bypasses": {"delete/beyond": 2, "update/page": 12, "update/margin": 4, "insert/beyond": 3, "blob/page": 8, "delete/page": 2, "blob/margin": 2, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 26, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 284, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 1, "clients": 16}
+{"seed": 2, "errors": {}, "detail": [], "bypasses": {"update/page": 8, "delete/page": 4, "update/beyond": 5, "blob/margin": 4, "update/margin": 2, "delete/beyond": 1, "insert/beyond": 4, "blob/page": 3, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 29, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 255, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 3, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 3, "delete/page": 4, "blob/page": 9, "blob/margin": 1, "insert/beyond": 7, "update/page": 8, "update/beyond": 2, "update/margin": 3, "delete/beyond": 2, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 32, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 274, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 22}
+{"seed": 4, "errors": {}, "detail": [], "bypasses": {"update/margin": 3, "blob/page": 12, "insert/beyond": 5, "delete/page": 6, "update/page": 13, "blob/margin": 4, "update/beyond": 2, "blob/beyond": 3}, "raises": {"startup": 6, "mismatch": 47, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 286, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 22}
+{"seed": 5, "errors": {}, "detail": [], "bypasses": {"blob/page": 7, "blob/margin": 4, "update/beyond": 2, "insert/beyond": 8, "blob/beyond": 4, "delete/page": 3, "update/page": 7, "update/margin": 3, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 257, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 5, "clients": 17}
+{"seed": 6, "errors": {"stale/beyond": 3}, "detail": [], "bypasses": {"insert/beyond": 6, "blob/page": 14, "update/page": 6, "blob/margin": 1, "update/margin": 2, "delete/margin": 1, "blob/beyond": 1, "update/beyond": 2, "delete/page": 1}, "raises": {"startup": 6, "mismatch": 34, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 262, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 20}
+{"seed": 7, "errors": {"stale/beyond": 1}, "detail": [], "bypasses": {"update/page": 13, "blob/page": 10, "delete/page": 3, "insert/beyond": 4, "update/margin": 3, "delete/margin": 3, "blob/margin": 1, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 36, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 273, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 28}
+{"seed": 8, "errors": {}, "detail": [], "bypasses": {"update/page": 10, "blob/page": 8, "blob/beyond": 2, "update/beyond": 1, "update/margin": 2, "insert/beyond": 10, "blob/margin": 4, "delete/page": 3, "delete/margin": 2}, "raises": {"startup": 6, "mismatch": 34, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 284, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 23}
+{"seed": 9, "errors": {}, "detail": [], "bypasses": {"blob/page": 15, "update/page": 8, "update/margin": 3, "delete/page": 7, "delete/beyond": 4, "delete/margin": 1, "blob/beyond": 1, "insert/beyond": 7, "blob/margin": 1}, "raises": {"startup": 6, "mismatch": 38, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 285, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 10, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 9, "update/page": 10, "blob/page": 11, "delete/margin": 1, "blob/beyond": 1, "update/beyond": 1, "update/margin": 3, "blob/margin": 1, "delete/page": 2}, "raises": {"startup": 6, "mismatch": 37, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 280, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 6, "clients": 27}
+{"seed": 11, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 7, "blob/page": 8, "update/page": 9, "delete/page": 2, "blob/beyond": 1, "blob/margin": 2, "update/margin": 3}, "raises": {"startup": 6, "mismatch": 28, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 259, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 12, "errors": {}, "detail": [], "bypasses": {"delete/page": 6, "update/page": 14, "blob/beyond": 1, "blob/page": 6, "update/beyond": 2, "delete/beyond": 1, "blob/margin": 2, "delete/margin": 1, "insert/beyond": 2}, "raises": {"startup": 6, "mismatch": 32, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 283, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 34}
+{"seed": 13, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 7, "delete/page": 5, "blob/page": 4, "update/page": 8, "update/beyond": 1, "update/margin": 1, "blob/margin": 3, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 254, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 22}
+{"seed": 14, "errors": {}, "detail": [], "bypasses": {"delete/beyond": 2, "delete/page": 10, "update/page": 8, "blob/beyond": 2, "blob/page": 13, "update/beyond": 2, "insert/beyond": 4, "update/margin": 1, "blob/margin": 2, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 39, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 257, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 3, "clients": 24}
+{"seed": 15, "errors": {}, "detail": [], "bypasses": {"blob/page": 8, "delete/page": 4, "delete/margin": 1, "blob/margin": 4, "update/margin": 4, "update/page": 10, "insert/beyond": 6, "delete/beyond": 2}, "raises": {"startup": 6, "mismatch": 39, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 253, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 18}
+{"seed": 16, "errors": {"stale/beyond": 1}, "detail": [], "bypasses": {"update/page": 14, "insert/beyond": 7, "delete/margin": 3, "update/margin": 6, "blob/page": 4, "delete/page": 4, "blob/beyond": 2, "blob/margin": 3, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 28, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 272, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 17, "errors": {}, "detail": [], "bypasses": {"blob/page": 5, "update/beyond": 2, "update/margin": 4, "insert/beyond": 7, "delete/page": 2, "update/page": 6, "blob/margin": 2}, "raises": {"startup": 6, "mismatch": 27, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 270, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 4, "clients": 20}
+{"seed": 18, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 6, "blob/page": 13, "delete/page": 5, "update/page": 3, "insert/beyond": 5, "blob/margin": 1, "delete/margin": 1, "update/margin": 1, "update/beyond": 2, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 32, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 273, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 25}
+{"seed": 19, "errors": {}, "detail": [], "bypasses": {"update/beyond": 2, "update/margin": 2, "blob/page": 7, "insert/beyond": 4, "update/page": 5, "delete/page": 4, "blob/margin": 2, "blob/beyond": 1, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 24, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 280, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 4, "clients": 28}
+{"seed": 20, "errors": {}, "detail": [], "bypasses": {"delete/page": 6, "blob/margin": 2, "insert/beyond": 4, "blob/page": 11, "delete/beyond": 1, "update/page": 5, "blob/beyond": 1, "update/margin": 2, "delete/margin": 3}, "raises": {"startup": 6, "mismatch": 35, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 262, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 1, "clients": 20}
+{"seed": 21, "errors": {}, "detail": [], "bypasses": {"update/margin": 7, "insert/beyond": 8, "blob/margin": 3, "update/page": 6, "blob/page": 7, "delete/page": 3, "delete/beyond": 1, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 28, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 268, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 24}
+{"seed": 22, "errors": {}, "detail": [], "bypasses": {"blob/margin": 4, "update/beyond": 2, "insert/beyond": 6, "update/page": 6, "blob/beyond": 2, "blob/page": 7, "update/margin": 2, "delete/page": 5, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 33, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 286, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 25}
+{"seed": 23, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 5, "blob/margin": 1, "update/page": 10, "blob/beyond": 4, "blob/page": 11, "delete/margin": 4, "update/margin": 1, "delete/page": 5}, "raises": {"startup": 6, "mismatch": 36, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 252, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 24, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 13, "update/page": 4, "delete/margin": 1, "update/beyond": 2, "delete/page": 5, "update/margin": 2, "blob/page": 3, "blob/margin": 1, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 23, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 271, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 6, "clients": 21}
+{"seed": 25, "errors": {}, "detail": [], "bypasses": {"update/beyond": 6, "blob/page": 7, "update/page": 10, "delete/page": 3, "insert/beyond": 5, "update/margin": 3, "delete/beyond": 1, "blob/margin": 2}, "raises": {"startup": 6, "mismatch": 29, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 276, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 24}
+{"seed": 26, "errors": {}, "detail": [], "bypasses": {"update/margin": 2, "update/page": 9, "insert/beyond": 8, "blob/page": 9, "update/beyond": 2, "delete/margin": 3, "delete/beyond": 1, "blob/margin": 3, "delete/page": 4, "blob/beyond": 1}, "raises": {"startup": 6, "mismatch": 37, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 283, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 27, "errors": {}, "detail": [], "bypasses": {"update/page": 9, "blob/page": 6, "blob/beyond": 1, "blob/margin": 3, "insert/beyond": 3, "delete/page": 7, "update/beyond": 1, "update/margin": 1}, "raises": {"startup": 6, "mismatch": 27, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 273, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 23}
+{"seed": 28, "errors": {}, "detail": [], "bypasses": {"blob/page": 5, "insert/beyond": 6, "delete/page": 7, "delete/beyond": 3, "update/page": 3, "update/margin": 4, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 23, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 257, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 28}
+{"seed": 29, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 6, "update/margin": 2, "delete/page": 4, "blob/page": 13, "update/page": 9, "blob/beyond": 5, "update/beyond": 1, "blob/margin": 1}, "raises": {"startup": 6, "mismatch": 31, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 278, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 22}
+{"seed": 30, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 10, "blob/beyond": 2, "update/beyond": 3, "update/page": 7, "blob/page": 7, "delete/page": 5, "blob/margin": 4, "update/margin": 2, "delete/beyond": 2}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 292, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 4, "clients": 24}
+{"seed": 31, "errors": {"stale/beyond": 1}, "detail": [], "bypasses": {"update/beyond": 1, "insert/beyond": 5, "blob/margin": 3, "update/margin": 4, "delete/page": 3, "blob/page": 8, "update/page": 4, "delete/margin": 2, "blob/beyond": 1, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 29, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 237, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 16}
+{"seed": 32, "errors": {}, "detail": [], "bypasses": {"update/beyond": 1, "blob/page": 5, "delete/page": 3, "update/page": 10, "update/margin": 2, "blob/margin": 2, "insert/beyond": 9}, "raises": {"startup": 6, "mismatch": 27, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 265, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 4, "clients": 24}
+{"seed": 33, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 8, "update/margin": 5, "blob/margin": 3, "update/page": 10, "delete/page": 6, "blob/page": 5, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 34, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 284, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 0, "clients": 28}
+{"seed": 34, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 2, "insert/beyond": 8, "blob/page": 5, "delete/margin": 3, "blob/margin": 3, "delete/page": 2, "update/page": 8, "delete/beyond": 1, "update/beyond": 2, "update/margin": 1}, "raises": {"startup": 6, "mismatch": 29, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 282, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 1, "clients": 27}
+{"seed": 35, "errors": {"stale/beyond": 1}, "detail": [], "bypasses": {"update/margin": 6, "blob/page": 6, "update/beyond": 3, "blob/beyond": 1, "delete/page": 4, "update/page": 10, "delete/margin": 3, "blob/margin": 3, "insert/beyond": 2}, "raises": {"startup": 6, "mismatch": 35, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 270, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 1, "clients": 29}
+{"seed": 36, "errors": {"extra/beyond": 1}, "detail": [], "bypasses": {"blob/page": 8, "update/page": 14, "insert/beyond": 7, "blob/margin": 4, "delete/margin": 2, "update/margin": 3, "delete/page": 5, "delete/beyond": 3, "blob/beyond": 1}, "raises": {"startup": 6, "mismatch": 34, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 278, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 5, "clients": 20}
+{"seed": 37, "errors": {}, "detail": [], "bypasses": {"update/page": 10, "insert/beyond": 6, "blob/page": 14, "update/margin": 5, "update/beyond": 1, "blob/beyond": 3, "delete/page": 2, "delete/margin": 2, "blob/margin": 2}, "raises": {"startup": 6, "mismatch": 35, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 267, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 4, "clients": 27}
+{"seed": 38, "errors": {"stale/beyond": 1}, "detail": [], "bypasses": {"update/margin": 3, "blob/page": 8, "blob/beyond": 3, "update/page": 8, "blob/margin": 4, "insert/beyond": 10, "delete/page": 1}, "raises": {"startup": 6, "mismatch": 32, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 278, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 5, "clients": 23}
+{"seed": 39, "errors": {}, "detail": [], "bypasses": {"update/page": 11, "insert/beyond": 7, "blob/margin": 4, "update/margin": 2, "blob/page": 5, "delete/page": 3, "delete/margin": 2, "update/beyond": 2, "blob/beyond": 3}, "raises": {"startup": 6, "mismatch": 31, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 276, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 3, "clients": 21}
+{"seed": 40, "errors": {}, "detail": [], "bypasses": {"update/page": 7, "delete/page": 4, "blob/beyond": 2, "blob/page": 10, "insert/beyond": 9, "update/beyond": 3, "update/margin": 4}, "raises": {"startup": 6, "mismatch": 37, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 305, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 4, "clients": 30}
+{"seed": 41, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 5, "update/beyond": 4, "delete/beyond": 2, "delete/page": 5, "insert/beyond": 6, "update/page": 4, "blob/margin": 2, "blob/page": 1, "delete/margin": 3, "vanished/page": 1}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 274, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 32}
+{"seed": 42, "errors": {}, "detail": [], "bypasses": {"blob/page": 12, "delete/margin": 2, "insert/beyond": 12, "update/page": 3, "blob/beyond": 4, "delete/page": 5, "update/margin": 2, "blob/margin": 1, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 33, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 268, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 5, "clients": 21}
+{"seed": 43, "errors": {}, "detail": [], "bypasses": {"blob/page": 14, "update/page": 7, "delete/page": 5, "blob/margin": 2, "update/margin": 1, "delete/margin": 2, "insert/beyond": 5, "update/beyond": 2, "blob/beyond": 3}, "raises": {"startup": 6, "mismatch": 32, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 276, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 4, "clients": 26}
+{"seed": 44, "errors": {}, "detail": [], "bypasses": {"delete/page": 3, "insert/beyond": 3, "blob/page": 7, "delete/margin": 2, "update/page": 12, "update/margin": 1, "blob/beyond": 2, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 259, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 1, "clients": 24}
+{"seed": 45, "errors": {}, "detail": [], "bypasses": {"update/margin": 2, "delete/beyond": 1, "insert/beyond": 9, "delete/page": 5, "update/beyond": 1, "blob/beyond": 1, "update/page": 4, "blob/margin": 3, "blob/page": 10, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 35, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 280, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 3, "clients": 24}
+{"seed": 46, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 4, "insert/beyond": 11, "blob/page": 4, "delete/page": 2, "delete/margin": 3, "update/page": 8, "blob/margin": 2, "update/beyond": 2, "update/margin": 2}, "raises": {"startup": 6, "mismatch": 28, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 270, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 5, "clients": 20}
+{"seed": 47, "errors": {}, "detail": [], "bypasses": {"update/beyond": 3, "delete/page": 3, "blob/page": 11, "insert/beyond": 8, "delete/margin": 1, "update/margin": 1, "update/page": 6, "blob/beyond": 1, "blob/margin": 3}, "raises": {"startup": 6, "mismatch": 31, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 258, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 25}
+{"seed": 48, "errors": {}, "detail": [], "bypasses": {"blob/page": 9, "blob/margin": 2, "delete/margin": 1, "update/page": 13, "insert/beyond": 9, "delete/page": 8, "update/margin": 1, "update/beyond": 2, "blob/beyond": 4, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 43, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 282, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 1, "clients": 22}
+{"seed": 49, "errors": {}, "detail": [], "bypasses": {"update/margin": 2, "insert/beyond": 10, "blob/page": 14, "update/page": 3, "delete/margin": 1, "blob/beyond": 3, "delete/beyond": 1, "blob/margin": 3, "delete/page": 2, "update/beyond": 2}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 267, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 25}
+{"seed": 50, "errors": {}, "detail": [], "bypasses": {"update/margin": 6, "update/page": 10, "blob/page": 4, "insert/beyond": 8, "delete/margin": 2, "blob/margin": 6, "delete/page": 1, "update/beyond": 2}, "raises": {"startup": 6, "mismatch": 30, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 284, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 16}
+{"seed": 51, "errors": {}, "detail": [], "bypasses": {"delete/page": 6, "insert/beyond": 10, "delete/beyond": 3, "update/page": 8, "update/margin": 7, "blob/page": 8, "blob/margin": 3, "delete/margin": 1, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 38, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 270, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 3, "clients": 27}
+{"seed": 52, "errors": {}, "detail": [], "bypasses": {"blob/page": 4, "blob/beyond": 2, "insert/beyond": 8, "update/margin": 5, "update/page": 10, "delete/page": 8, "blob/margin": 2}, "raises": {"startup": 6, "mismatch": 39, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 262, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 3, "clients": 21}
+{"seed": 53, "errors": {}, "detail": [], "bypasses": {"blob/page": 9, "insert/beyond": 5, "update/page": 8, "delete/beyond": 2, "delete/page": 3, "blob/margin": 3, "update/margin": 6, "blob/beyond": 2, "update/beyond": 3, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 36, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 286, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 24}
+{"seed": 54, "errors": {}, "detail": [], "bypasses": {"blob/page": 8, "update/page": 6, "delete/page": 5, "delete/beyond": 2, "update/margin": 2, "blob/margin": 3, "blob/beyond": 3, "delete/margin": 2, "insert/beyond": 5, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 27, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 277, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 23}
+{"seed": 55, "errors": {}, "detail": [], "bypasses": {"update/beyond": 4, "delete/margin": 2, "update/margin": 5, "blob/page": 5, "blob/margin": 3, "update/page": 3, "delete/page": 6, "blob/beyond": 1, "insert/beyond": 5}, "raises": {"startup": 6, "mismatch": 31, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 271, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 1, "clients": 20}
+{"seed": 56, "errors": {}, "detail": [], "bypasses": {"blob/margin": 3, "blob/page": 11, "insert/beyond": 7, "delete/beyond": 1, "update/margin": 3, "update/page": 9, "delete/margin": 2, "blob/beyond": 3, "delete/page": 3}, "raises": {"startup": 6, "mismatch": 33, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 276, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 20}
+{"seed": 57, "errors": {}, "detail": [], "bypasses": {"update/page": 8, "blob/margin": 4, "insert/beyond": 8, "blob/page": 4, "delete/page": 4, "blob/beyond": 1, "update/margin": 2, "delete/margin": 1, "update/beyond": 1, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 26, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 270, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 5, "clients": 26}
+{"seed": 58, "errors": {}, "detail": [], "bypasses": {"delete/page": 8, "blob/beyond": 2, "update/page": 9, "insert/beyond": 4, "blob/margin": 5, "update/beyond": 2, "update/margin": 2, "blob/page": 3, "delete/margin": 1, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 31, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 258, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 1, "clients": 21}
+{"seed": 59, "errors": {}, "detail": [], "bypasses": {"insert/beyond": 6, "delete/page": 5, "update/beyond": 1, "delete/margin": 1, "blob/margin": 3, "update/page": 4, "blob/beyond": 2, "blob/page": 3, "update/margin": 1}, "raises": {"startup": 6, "mismatch": 23, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 263, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 2, "clients": 25}
+{"seed": 60, "errors": {}, "detail": [], "bypasses": {"delete/page": 2, "insert/beyond": 5, "update/page": 9, "blob/page": 7, "update/beyond": 2, "blob/margin": 2, "delete/margin": 1, "blob/beyond": 1}, "raises": {"startup": 6, "mismatch": 25, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 264, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 26}
+{"total": {"extra/beyond": 2, "stale/beyond": 8}}
+# judged: holds (328 s)
+# run 3: T restart, 5 reps
+# T restart sqlite 3.53.1 python 3.13.15
+{"rep": 0, "target": 1, "settled": true, "before": {}, "after": {}, "detail": []}
+{"rep": 1, "target": 1, "settled": true, "before": {}, "after": {}, "detail": []}
+{"rep": 2, "target": 1, "settled": true, "before": {}, "after": {}, "detail": []}
+{"rep": 3, "target": 1, "settled": true, "before": {}, "after": {}, "detail": []}
+{"rep": 4, "target": 1, "settled": true, "before": {}, "after": {}, "detail": []}
+{"raises": {"startup": 36, "mismatch": 5, "unverifiable": 0}}
+# judged: holds (5 s)
+# run 4: T restore, 5 reps
+# T restore sqlite 3.53.1 python 3.13.15
+{"rep": 0, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 1, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 2, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 3, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"rep": 4, "settled": true, "writes_after_start": 0, "after": {}, "detail": []}
+{"raises": {"startup": 36, "mismatch": 0, "unverifiable": 0}}
+# judged: holds (7 s)
+# run 5: T live-restore, 5 reps
+# T live-restore sqlite 3.53.1 python 3.13.15
+{"rep": 0, "settled": true, "writes_after_restore": 13, "after": {}, "detail": []}
+{"rep": 1, "settled": true, "writes_after_restore": 13, "after": {}, "detail": []}
+{"rep": 2, "settled": true, "writes_after_restore": 13, "after": {}, "detail": []}
+{"rep": 3, "settled": true, "writes_after_restore": 13, "after": {}, "detail": []}
+{"rep": 4, "settled": true, "writes_after_restore": 13, "after": {}, "detail": []}
+{"raises": {"startup": 6, "mismatch": 0, "unverifiable": 0, "the": 25}}
+# judged: holds (7 s)
+# run 6: TS1 bypass, 5 seeds
+# TS1 bypass sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {"stale/covered": 209, "extra/covered": 99, "stale/beyond": 36, "extra/beyond": 14}, "detail": ["sse1: stale row 15 (held 't-bbbb', truth 't-aaaa', render_head 1795810785924137, head 1795810785924232)", "sse1: stale row 20 (held 't-bbbb', truth 't-aaaa', render_head 1795810785924137, head 1795810785924232)", "sse1: stale row 36 (held 't-bbbb', truth 't-aaaa', render_head 1795810785924137, head 1795810785924232)", "sse1: stale row 38 (held 't-aaaa', truth 't-bbbb', render_head 1795810785924137, head 1795810785924232)", "sse3: stale row 15 (held 't-bbbb', truth 't-aaaa', render_head 1795810785924137, head 1795810785924232)", "sse3: stale row 20 (held 't-bbbb', truth 't-aaaa', render_head 1795810785924137, head 1795810785924232)", "sse3: stale row 36 (held 't-bbbb', truth 't-aaaa', render_head 1795810785924137, head 1795810785924232)", "sse3: stale row 38 (held 't-aaaa', truth 't-bbbb', render_head 1795810785924137, head 1795810785924232)"], "bypasses": {"delete/beyond": 2, "update/page": 11, "update/margin": 3, "insert/beyond": 4, "blob/page": 10, "delete/page": 4, "blob/margin": 2}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 240, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 1, "clients": 16}
+{"seed": 2, "errors": {"stale/covered": 187, "extra/covered": 118, "stale/beyond": 73}, "detail": ["sse1: stale row 2 (held 't-aaaa', truth 't-bbbb', render_head 1795810790483115, head 1795810790483141)", "sse1: stale row 3 (held 't-aaaa', truth 't-bbbb', render_head 1795810790483115, head 1795810790483141)", "sse1: stale row 7 (held 't-cccc', truth 't-aaaa', render_head 1795810790483115, head 1795810790483141)", "sse1: extra row 11 (held 't-aaaa', truth None, render_head 1795810790483115, head 1795810790483141)", "sse1: extra row 18 (held 't-cccc', truth None, render_head 1795810790483115, head 1795810790483141)", "sse3: stale row 2 (held 't-aaaa', truth 't-bbbb', render_head 1795810790483115, head 1795810790483141)", "sse3: stale row 3 (held 't-aaaa', truth 't-bbbb', render_head 1795810790483115, head 1795810790483141)", "sse3: stale row 7 (held 't-cccc', truth 't-aaaa', render_head 1795810790483115, head 1795810790483141)"], "bypasses": {"update/page": 8, "delete/page": 4, "update/beyond": 5, "blob/margin": 4, "update/margin": 2, "delete/beyond": 1, "insert/beyond": 4, "blob/page": 3, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 237, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 3, "errors": {"stale/covered": 268, "extra/covered": 90, "stale/beyond": 42}, "detail": ["sse1: stale row 11 (held 't-cccc', truth 't-bbbb', render_head 1795810794963115, head 1795810794963147)", "sse1: extra row 24 (held 't-cccc', truth None, render_head 1795810794963115, head 1795810794963147)", "sse1: stale row 25 (held 't-aaaa', truth 't-cccc', render_head 1795810794963115, head 1795810794963147)", "sse1: stale row 39 (held 't-aaaa', truth 't-cccc', render_head 1795810794963115, head 1795810794963147)", "sse3: stale row 11 (held 't-cccc', truth 't-bbbb', render_head 1795810794963115, head 1795810794963147)", "sse3: extra row 24 (held 't-cccc', truth None, render_head 1795810794963115, head 1795810794963147)", "sse3: stale row 25 (held 't-aaaa', truth 't-cccc', render_head 1795810794963115, head 1795810794963147)", "sse3: stale row 39 (held 't-aaaa', truth 't-cccc', render_head 1795810794963115, head 1795810794963147)"], "bypasses": {"blob/beyond": 3, "delete/page": 4, "blob/page": 10, "blob/margin": 1, "insert/beyond": 7, "update/page": 9, "update/beyond": 2, "update/margin": 3, "delete/beyond": 1, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 245, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 23}
+{"seed": 4, "errors": {"extra/covered": 135, "stale/covered": 363, "stale/beyond": 69, "extra/beyond": 7}, "detail": ["sse5: extra row 3 (held 't-aaaa', truth None, render_head 1795810799445126, head 1795810799445161)", "sse5: extra row 16 (held 't-cccc', truth None, render_head 1795810799445126, head 1795810799445161)", "sse5: stale row 36 (held 't-cccc', truth 't-bbbb', render_head 1795810799445126, head 1795810799445161)", "sse5: stale row 37 (held 't-bbbb', truth 't-cccc', render_head 1795810799445126, head 1795810799445161)", "sse5: stale row 43 (held 't-aaaa', truth 't-cccc', render_head 1795810799445126, head 1795810799445161)", "poll2: extra row 3 (held 't-aaaa', truth None, render_head 1795810799445126, head 1795810799445161)", "poll2: extra row 16 (held 't-cccc', truth None, render_head 1795810799445126, head 1795810799445161)", "poll2: stale row 36 (held 't-cccc', truth 't-bbbb', render_head 1795810799445126, head 1795810799445161)"], "bypasses": {"update/margin": 3, "blob/page": 12, "insert/beyond": 5, "delete/page": 6, "update/page": 11, "blob/margin": 4, "update/beyond": 2, "blob/beyond": 3, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 276, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 1, "clients": 23}
+{"seed": 5, "errors": {"stale/covered": 130, "stale/beyond": 48, "extra/covered": 72, "extra/beyond": 6}, "detail": ["sse1: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023168)", "sse3: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023168)", "sse5: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023168)", "sse7: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023168)", "poll2: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023168)", "poll4: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023168)", "sse1: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810804023135, head 1795810804023196)", "sse1: stale row 45 (held 't-bbbb', truth 't-aaaa', render_head 1795810804023135, head 1795810804023196)"], "bypasses": {"blob/page": 7, "blob/margin": 5, "update/beyond": 2, "insert/beyond": 7, "blob/beyond": 4, "delete/page": 3, "update/page": 8, "update/margin": 3, "delete/beyond": 3}, "raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 238, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 16}
+{"total": {"stale/covered": 1157, "extra/covered": 514, "stale/beyond": 268, "extra/beyond": 27}}
+# judged: failed, as required (23 s)
+# run 7: TS2 stamped, 5 seeds
+# TS2 stamped sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 106, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 297, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 23}
+{"seed": 2, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 89, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 263, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 0, "clients": 21}
+{"seed": 3, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 93, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 280, "bulk_deletes": 2, "writer_errors": [], "unstamped_rows": 0, "clients": 21}
+{"seed": 4, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 102, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 299, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 21}
+{"seed": 5, "errors": {}, "detail": [], "bypasses": {}, "raises": {"startup": 6, "mismatch": 99, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 282, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 15}
+{"total": {}}
+# judged: failed, as required (75 s)
+# run 8: TS3 restore, 5 reps
+# TS3 restore sqlite 3.53.1 python 3.13.15
+{"rep": 0, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 100}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 133)", "sse0: stale row 10 (held 't-cccc', truth 't-bbbb', render_head 120, head 133)", "sse0: stale row 18 (held 't-cccc', truth 't-aaaa', render_head 120, head 133)", "sse0: stale row 19 (held 't-aaaa', truth 't-cccc', render_head 120, head 133)"]}
+{"rep": 1, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 180}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 146)", "sse0: stale row 7 (held 't-aaaa', truth 't-bbbb', render_head 120, head 146)", "sse0: stale row 9 (held 't-bbbb', truth 't-aaaa', render_head 120, head 146)", "sse0: stale row 10 (held 't-cccc', truth 't-bbbb', render_head 120, head 146)"]}
+{"rep": 2, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 240}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 159)", "sse0: stale row 2 (held 't-cccc', truth 't-bbbb', render_head 120, head 159)", "sse0: stale row 5 (held 't-bbbb', truth 't-cccc', render_head 120, head 159)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 120, head 159)"]}
+{"rep": 3, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 270}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 172)", "sse0: stale row 2 (held 't-cccc', truth 't-bbbb', render_head 120, head 172)", "sse0: stale row 5 (held 't-bbbb', truth 't-cccc', render_head 120, head 172)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 120, head 172)"]}
+{"rep": 4, "settled": true, "writes_after_start": 13, "after": {"stale/covered": 330}, "detail": ["sse0: stale row 1 (held 't-cccc', truth 't-aaaa', render_head 120, head 185)", "sse0: stale row 2 (held 't-cccc', truth 't-bbbb', render_head 120, head 185)", "sse0: stale row 5 (held 't-bbbb', truth 't-cccc', render_head 120, head 185)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 120, head 185)"]}
+{"raises": {"startup": 0, "mismatch": 0, "unverifiable": 0}}
+# judged: failed, as required (7 s)
+# run 9: TS4 live-restore, 5 reps
+# TS4 live-restore sqlite 3.53.1 python 3.13.15
+{"rep": 0, "settled": true, "writes_after_restore": 13, "after": {"stale/covered": 100}, "detail": ["sse0: stale row 4 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946152)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 1795810890946139, head 1795810890946152)", "sse0: stale row 7 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946152)", "sse0: stale row 11 (held 't-cccc', truth 't-aaaa', render_head 1795810890946139, head 1795810890946152)"]}
+{"rep": 1, "settled": true, "writes_after_restore": 13, "after": {"stale/covered": 180}, "detail": ["sse0: stale row 3 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946165)", "sse0: stale row 4 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946165)", "sse0: stale row 6 (held 't-aaaa', truth 't-bbbb', render_head 1795810890946139, head 1795810890946165)", "sse0: stale row 7 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946165)"]}
+{"rep": 2, "settled": true, "writes_after_restore": 13, "after": {"stale/covered": 220}, "detail": ["sse0: stale row 3 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946178)", "sse0: stale row 4 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946178)", "sse0: stale row 6 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946178)", "sse0: stale row 7 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946178)"]}
+{"rep": 3, "settled": true, "writes_after_restore": 13, "after": {"stale/covered": 270}, "detail": ["sse0: stale row 3 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946191)", "sse0: stale row 4 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946191)", "sse0: stale row 5 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946191)", "sse0: stale row 6 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946191)"]}
+{"rep": 4, "settled": true, "writes_after_restore": 13, "after": {"stale/covered": 310}, "detail": ["sse0: stale row 3 (held 't-aaaa', truth 't-cccc', render_head 1795810890946139, head 1795810890946204)", "sse0: stale row 4 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946204)", "sse0: stale row 5 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946204)", "sse0: stale row 6 (held 't-cccc', truth 't-bbbb', render_head 1795810890946139, head 1795810890946204)"]}
+{"raises": {"startup": 6, "mismatch": 0, "unverifiable": 0}}
+# judged: failed, as required (7 s)
+# run 10: TG1 bypass, 5 seeds
+# TG1 bypass sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {"extra/covered": 2}, "detail": ["poll4: extra row 50 (held 't-bbbb', truth None, render_head 1795810900132008, head 1795810900132015)", "poll15: extra row 50 (held 't-bbbb', truth None, render_head 1795810900132010, head 1795810900132015)"], "bypasses": {"delete/beyond": 2, "update/page": 12, "update/margin": 4, "insert/beyond": 3, "blob/page": 8, "delete/page": 2, "blob/margin": 2, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 23, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 271, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 3, "clients": 16}
+{"seed": 2, "errors": {"extra/covered": 6}, "detail": ["sse1: extra row 18 (held 't-cccc', truth None, render_head 1795810902434993, head 1795810902435005)", "sse3: extra row 18 (held 't-cccc', truth None, render_head 1795810902434993, head 1795810902435005)", "sse5: extra row 18 (held 't-cccc', truth None, render_head 1795810902434993, head 1795810902435005)", "sse7: extra row 18 (held 't-cccc', truth None, render_head 1795810902434993, head 1795810902435005)", "poll2: extra row 18 (held 't-cccc', truth None, render_head 1795810902434994, head 1795810902435005)", "poll6: extra row 18 (held 't-cccc', truth None, render_head 1795810902434997, head 1795810902435005)"], "bypasses": {"update/page": 8, "delete/page": 4, "update/beyond": 5, "blob/margin": 4, "update/margin": 2, "delete/beyond": 1, "insert/beyond": 4, "blob/page": 3, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 22, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 252, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 2, "clients": 21}
+{"seed": 3, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 3, "delete/page": 4, "blob/page": 9, "blob/margin": 1, "insert/beyond": 7, "update/page": 8, "update/beyond": 2, "update/margin": 3, "delete/beyond": 2, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 28, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 273, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 22}
+{"seed": 4, "errors": {"extra/covered": 6}, "detail": ["poll2: extra row 65 (held 't-bbbb', truth None, render_head 1795810913442019, head 1795810913442039)", "poll10: extra row 65 (held 't-bbbb', truth None, render_head 1795810913442029, head 1795810913442039)", "poll16: extra row 65 (held 't-bbbb', truth None, render_head 1795810913442030, head 1795810913442039)", "poll17: extra row 65 (held 't-bbbb', truth None, render_head 1795810913442021, head 1795810913442039)", "poll18: extra row 65 (held 't-bbbb', truth None, render_head 1795810913442025, head 1795810913442039)", "poll19: extra row 65 (held 't-bbbb', truth None, render_head 1795810913442030, head 1795810913442039)"], "bypasses": {"update/margin": 3, "blob/page": 12, "insert/beyond": 5, "delete/page": 6, "update/page": 11, "blob/margin": 4, "update/beyond": 2, "blob/beyond": 3, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 36, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 287, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 23}
+{"seed": 5, "errors": {"extra/covered": 6}, "detail": ["sse1: extra row 128 (held 't-cccc', truth None, render_head 1795810919723010, head 1795810919723026)", "sse7: extra row 128 (held 't-cccc', truth None, render_head 1795810919723010, head 1795810919723026)", "sse14: extra row 128 (held 't-cccc', truth None, render_head 1795810919723010, head 1795810919723026)", "sse15: extra row 128 (held 't-cccc', truth None, render_head 1795810919723014, head 1795810919723026)", "poll2: extra row 128 (held 't-cccc', truth None, render_head 1795810919723011, head 1795810919723026)", "poll12: extra row 128 (held 't-cccc', truth None, render_head 1795810919723010, head 1795810919723026)"], "bypasses": {"blob/page": 7, "blob/margin": 4, "update/beyond": 2, "insert/beyond": 8, "blob/beyond": 4, "delete/page": 3, "update/page": 7, "update/margin": 3, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 25, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 258, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 5, "clients": 17}
+{"total": {"extra/covered": 20}}
+# judged: failed, as required (23 s)
+# run 11: TG2 bypass, 5 seeds
+# TG2 bypass sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {"extra/beyond": 1}, "detail": [], "bypasses": {"delete/beyond": 2, "update/page": 12, "update/margin": 4, "insert/beyond": 3, "blob/page": 8, "delete/page": 2, "blob/margin": 2, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 26, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 283, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 16}
+{"seed": 2, "errors": {}, "detail": [], "bypasses": {"update/page": 8, "delete/page": 4, "update/beyond": 5, "blob/margin": 4, "update/margin": 2, "delete/beyond": 1, "insert/beyond": 4, "blob/page": 3, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 21, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 253, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 1, "clients": 21}
+{"seed": 3, "errors": {}, "detail": [], "bypasses": {"blob/beyond": 3, "delete/page": 4, "blob/page": 9, "blob/margin": 1, "insert/beyond": 7, "update/page": 8, "update/beyond": 2, "update/margin": 3, "delete/beyond": 2, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 29, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 274, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 22}
+{"seed": 4, "errors": {}, "detail": [], "bypasses": {"update/margin": 3, "blob/page": 12, "insert/beyond": 5, "delete/page": 6, "update/page": 13, "blob/margin": 4, "update/beyond": 2, "blob/beyond": 3}, "raises": {"startup": 6, "mismatch": 40, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 295, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 2, "clients": 22}
+{"seed": 5, "errors": {"extra/covered": 9}, "detail": ["sse1: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026010, head 1795810943026025)", "sse3: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026010, head 1795810943026025)", "sse5: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026010, head 1795810943026025)", "sse7: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026010, head 1795810943026025)", "sse10: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026010, head 1795810943026025)", "sse11: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026010, head 1795810943026025)", "sse14: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026013, head 1795810943026025)", "poll2: extra row 128 (held 't-aaaa', truth None, render_head 1795810943026002, head 1795810943026025)"], "bypasses": {"blob/page": 6, "blob/margin": 4, "update/beyond": 2, "insert/beyond": 10, "blob/beyond": 5, "delete/page": 3, "update/page": 9, "update/margin": 4, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 24, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 259, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 6, "clients": 16}
+{"total": {"extra/beyond": 1, "extra/covered": 9}}
+# judged: failed, as required (23 s)
+# run 12: TG3 bypass, 5 seeds
+# TG3 bypass sqlite 3.53.1 python 3.13.15
+{"seed": 1, "errors": {"stale/covered": 85}, "detail": ["sse3: stale row 13 (held 't-bbbb', truth 't-cccc', render_head 1795810944519013, head 1795810944519040)", "sse3: stale row 103 (held 't-bbbb', truth 't-aaaa', render_head 1795810944519013, head 1795810944519040)", "sse5: stale row 13 (held 't-bbbb', truth 't-cccc', render_head 1795810944519013, head 1795810944519040)", "sse5: stale row 103 (held 't-bbbb', truth 't-aaaa', render_head 1795810944519013, head 1795810944519040)", "sse7: stale row 13 (held 't-bbbb', truth 't-cccc', render_head 1795810944519013, head 1795810944519040)", "sse7: stale row 103 (held 't-bbbb', truth 't-aaaa', render_head 1795810944519013, head 1795810944519040)", "poll2: stale row 13 (held 't-bbbb', truth 't-cccc', render_head 1795810944519013, head 1795810944519040)", "poll2: stale row 103 (held 't-bbbb', truth 't-aaaa', render_head 1795810944519013, head 1795810944519040)"], "bypasses": {"delete/beyond": 2, "update/page": 12, "update/margin": 4, "insert/beyond": 3, "blob/page": 8, "delete/page": 2, "blob/margin": 2, "update/beyond": 1}, "raises": {"startup": 6, "mismatch": 6, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 258, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 0, "clients": 16}
+{"seed": 2, "errors": {"stale/covered": 5}, "detail": ["poll4: stale row 58 (held 't-aaaa', truth 't-bbbb', render_head 1795810951225999, head 1795810951226005)", "poll4: stale row 60 (held 't-cccc', truth 't-bbbb', render_head 1795810951225999, head 1795810951226005)", "poll6: stale row 67 (held 't-aaaa', truth 't-bbbb', render_head 1795810952258986, head 1795810952259008)", "poll17: stale row 67 (held 't-aaaa', truth 't-bbbb', render_head 1795810952259000, head 1795810952259008)", "poll6: stale row 20 (held 't-cccc', truth 't-bbbb', render_head 1795810952795010, head 1795810952795033)"], "bypasses": {"update/page": 8, "delete/page": 4, "update/beyond": 5, "blob/margin": 4, "update/margin": 2, "delete/beyond": 1, "insert/beyond": 4, "blob/page": 3, "blob/beyond": 2}, "raises": {"startup": 6, "mismatch": 10, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 249, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 1, "clients": 21}
+{"seed": 3, "errors": {"stale/covered": 128, "stale/beyond": 10}, "detail": ["sse1: stale row 12 (held 't-aaaa', truth 't-cccc', render_head 1795810953494022, head 1795810953494051)", "sse1: stale row 25 (held 't-aaaa', truth 't-cccc', render_head 1795810953494022, head 1795810953494051)", "sse1: stale row 39 (held 't-aaaa', truth 't-cccc', render_head 1795810953494022, head 1795810953494051)", "sse3: stale row 12 (held 't-aaaa', truth 't-cccc', render_head 1795810953494022, head 1795810953494051)", "sse3: stale row 25 (held 't-aaaa', truth 't-cccc', render_head 1795810953494022, head 1795810953494051)", "sse3: stale row 39 (held 't-aaaa', truth 't-cccc', render_head 1795810953494022, head 1795810953494051)", "sse5: stale row 12 (held 't-aaaa', truth 't-cccc', render_head 1795810953494021, head 1795810953494051)", "sse5: stale row 25 (held 't-aaaa', truth 't-cccc', render_head 1795810953494021, head 1795810953494051)"], "bypasses": {"blob/beyond": 3, "delete/page": 4, "blob/page": 9, "blob/margin": 1, "insert/beyond": 7, "update/page": 8, "update/beyond": 2, "update/margin": 3, "delete/beyond": 2, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 11, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 266, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 4, "clients": 22}
+{"seed": 4, "errors": {"stale/covered": 101}, "detail": ["sse5: stale row 36 (held 't-cccc', truth 't-bbbb', render_head 1795810958098020, head 1795810958098031)", "sse5: stale row 37 (held 't-bbbb', truth 't-cccc', render_head 1795810958098020, head 1795810958098031)", "sse5: stale row 43 (held 't-aaaa', truth 't-cccc', render_head 1795810958098020, head 1795810958098031)", "poll4: stale row 37 (held 't-bbbb', truth 't-cccc', render_head 1795810958098029, head 1795810958098031)", "poll6: stale row 36 (held 't-cccc', truth 't-bbbb', render_head 1795810958098018, head 1795810958098031)", "poll6: stale row 37 (held 't-bbbb', truth 't-cccc', render_head 1795810958098018, head 1795810958098031)", "poll6: stale row 43 (held 't-aaaa', truth 't-cccc', render_head 1795810958098018, head 1795810958098031)", "poll8: stale row 36 (held 't-cccc', truth 't-bbbb', render_head 1795810958098025, head 1795810958098031)"], "bypasses": {"update/margin": 3, "blob/page": 12, "insert/beyond": 5, "delete/page": 6, "update/page": 11, "blob/margin": 4, "update/beyond": 2, "blob/beyond": 3, "delete/margin": 1}, "raises": {"startup": 6, "mismatch": 12, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 276, "bulk_deletes": 0, "writer_errors": [], "unstamped_rows": 2, "clients": 23}
+{"seed": 5, "errors": {"stale/covered": 69, "stale/beyond": 6}, "detail": ["sse1: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810962425131, head 1795810962425164)", "sse3: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810962425131, head 1795810962425164)", "sse5: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810962425131, head 1795810962425164)", "sse7: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810962425131, head 1795810962425164)", "poll2: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810962425131, head 1795810962425164)", "poll4: stale row 23 (held 't-aaaa', truth 't-cccc', render_head 1795810962425131, head 1795810962425164)", "poll2: stale row 45 (held 't-bbbb', truth 't-aaaa', render_head 1795810963029997, head 1795810963030011)", "poll4: stale row 45 (held 't-bbbb', truth 't-aaaa', render_head 1795810963030000, head 1795810963030011)"], "bypasses": {"blob/page": 7, "blob/margin": 4, "update/beyond": 2, "insert/beyond": 8, "blob/beyond": 5, "delete/page": 3, "update/page": 7, "update/margin": 3, "delete/beyond": 1}, "raises": {"startup": 6, "mismatch": 7, "unverifiable": 0}, "checks": 8, "unsettled": 0, "writes": 251, "bulk_deletes": 1, "writer_errors": [], "unstamped_rows": 7, "clients": 17}
+{"total": {"stale/covered": 388, "stale/beyond": 16}}
+# judged: failed, as required (23 s)
+# runner done after 574 s

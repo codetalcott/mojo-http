@@ -30,6 +30,13 @@ SABOTAGES = {
         "        var restored = head < self.highest or (self.schema >= 0 and schema != self.schema)\n",
         "        var restored = head < self.highest\n",
     )],
+    # G1-G3, one per finding of the merge of the rows and their copies
+    # (2026-11-27). G1: a copy whose row is gone is ignored.
+    "G1": [("        for ref d in gone:\n", "        gone = List[Seen]()\n        for ref d in gone:\n")],
+    # G2: a row with no copy at its id is counted as matched.
+    "G2": [("                differ.append(Seen(id, True, title^, False, String()))\n", "                pass\n")],
+    # G3: a row and its copy are never compared.
+    "G3": [("                if copy != title:\n", "                if False:\n")],
 }
 
 

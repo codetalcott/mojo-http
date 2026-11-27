@@ -46,8 +46,17 @@ fan-out on each tick, opens the same way:
 3. If the witness said UNCHANGED and the head is the kept page's, the kept
    page stands.
 4. Otherwise, compare the first `CHECK_WINDOW` rows (100: the page and as
-   many again) with their copies in one join, plus the copies over the same
-   ids whose rows are gone. Then render the page.
+   many again) with their copies. The rows and the copies are read as two
+   scans in id order, on statements kept between answers, and merged as
+   they are read:
+   - a pair whose titles differ is a difference;
+   - a row with no copy at its id is one;
+   - a copy below the next row, whose row is gone, is one.
+
+   No row is probed for its copy, nor a copy for its row. The merge stops
+   at the window's last row and its copy, so a copy above that row is never
+   read; in a table shorter than the window, every copy is. Then render the
+   page from the same rows.
 5. Answer in the same transaction, and settle the witness after the commit.
 
 **A difference raises the floor:**
@@ -233,11 +242,29 @@ loopback; the write is the update and its commit, by the writer:
 | the write | 40.5–43.3 µs | 45.5–46.2 µs |
 
 - **About 30 µs more on a write's page,** which is 1.40× the round trip.
-  The check joins 100 rows with their copies, and reads the schema version;
-  then the render reads 51 rows again.
+  That design joined 100 rows with their copies, scanned for gone copies
+  and read the schema version, each on a statement prepared for the
+  answer; then the render read 51 rows again.
 - **2–6 µs more on each write** (5–14%, round by round), for the copy's
   row.
 - `/notes/changes` costs 3 µs more, and the idle page nothing.
+
+**The merged scans (2026-11-27).** The comparison is now two scans merged,
+kept between answers, and the page is rendered from the rows the first scan
+read. The design was worked out in a lab copy of this app, where a
+breakdown put most of the 30 µs in the gone-copy side's probe per copy.
+The same run, on this tree:
+
+| | `main` (the join) | the merged scans |
+|---|---|---|
+| `GET /notes` after a write | 106.3–107.8 µs | 79.9–80.1 µs |
+| `GET /notes`, the clock unmoved | 49.8–50.4 µs | 48.7–48.8 µs |
+| `GET /notes/changes?since=head-1` | 55.9–56.6 µs | 54.2–54.5 µs |
+| the write | 46.7–51.5 µs | 47.4 µs |
+
+That is 1.33–1.35× faster on a write's page, or 26–28 µs less. In #714's
+run above, the check had added 30 µs. That is another run, so the two are
+not one subtraction. `results-merge-cost-2026-11-27.txt` has the run.
 
 ## What it is not
 
@@ -252,9 +279,10 @@ loopback; the write is the update and its commit, by the writer:
   consumer pays for resets.
 - **Not free.** The copy doubles the titles on disk, and every row write
   writes one more indexed row.
-- **Not tested on Linux under pressure, or under forked workers.** The unit
-  tests and the sabotage run on both platforms in CI. The pressure harness
-  ran on macOS only.
+- **Not tested under forked workers.** The unit tests and the sabotage run
+  on both platforms in CI. The pressure harness ran on macOS for every
+  design, and once on Linux for the merged scans
+  (`results-merge-linux-2026-11-27.txt`).
 - **Not tested by injection:** a thread checking between the raise and the
   copies. They are one transaction, so the window does not exist; nothing
   can inject into it either.
