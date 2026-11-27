@@ -8,7 +8,10 @@ reverts one rule by an EXACT source line and runs the test file that
 claims it, which must fail in its own words:
 
 - **the comparison:** the window's rows against their copies in
-  `notes_seen`. Always answered "the same", a bypass reaches no client.
+  `notes_seen`, read as two scans in id order and merged as they are read.
+  Always answered "the same", a bypass reaches no client; and each of the
+  merge's three findings is its own rule: a pair whose titles differ, a row
+  with no copy at its id, and a copy below the next row, whose row is gone.
 - **a copy whose row is gone is found,** over the window's ids, and every
   one in a table shorter than the window: else a row deleted with the
   triggers out of the way stays on every client.
@@ -38,7 +41,7 @@ claims it, which must fail in its own words:
 - **`raise_floor` moves the floor, past every stamp given,** in m0-sqlite:
   past the counter a restore brought back, too.
 
-About two minutes on an Apple M4: eighteen `mojo run`s of the app's test
+About two minutes on an Apple M4: twenty `mojo run`s of the app's test
 file, three of `test_stamps.mojo`.
 
     python3 scripts/checked_page_sabotage.py
@@ -67,20 +70,37 @@ RULES = [
         expect="test_a_write_no_stamp_saw_raises_the_floor_over_every_client",
     ),
     rule(
-        "gone: a copy whose row is gone is found (N57)",
+        "gone: a copy below the next row, whose row is gone, is found (N57)",
         SERVER,
-        "        while g.step():\n",
-        "        while False and g.step():\n",
+        "            while more_s and s.column_int(0) < id:\n"
+        "                gone.append(Seen(s.column_int(0), False, String(), True, s.column_text(1)))\n",
+        "            while more_s and s.column_int(0) < id:\n",
         gate="app",
         expect="test_a_bypassed_delete_is_found_by_the_copy_it_leaves",
     ),
     rule(
         "short: in a table shorter than the window every copy is read, the last row's included (N57)",
         SERVER,
-        "        g.bind_int(1, last if shown == CHECK_WINDOW else Int.MAX)\n",
-        "        g.bind_int(1, last)\n",
+        "        if shown < CHECK_WINDOW:\n            while more_s:\n",
+        "        if False:\n            while more_s:\n",
         gate="app",
         expect="test_a_bypassed_delete_is_found_by_the_copy_it_leaves",
+    ),
+    rule(
+        "uncopied: a row with no copy at its id is a difference (N57)",
+        SERVER,
+        "                differ.append(Seen(id, True, title^, False, String()))\n",
+        "                pass\n",
+        gate="app",
+        expect="test_a_bypassed_insert_stays_a_difference_after_a_stamped_edit",
+    ),
+    rule(
+        "titles: a row and its copy are compared, title against title (N57)",
+        SERVER,
+        "                if copy != title:\n",
+        "                if False:\n",
+        gate="app",
+        expect="test_a_write_no_stamp_saw_raises_the_floor_over_every_client",
     ),
     rule(
         "trigger: a stamped update moves the copy with the row (N57)",

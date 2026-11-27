@@ -1110,7 +1110,7 @@ help = "Revert each rule of m0-sqlite's table witness; every one must be caught"
 cmd = "python3 scripts/witness_sabotage.py"
 
 # The table notes app's check (N57), its feed's re-born id (N50) and
-# `raise_floor` (O33): nineteen rules,
+# `raise_floor` (O33): twenty-three rules,
 # each reverted alone, each caught by the test that claims it. In
 # test-gates beside the witness's, whose rules it builds on.
 [tool.poe.tasks.sabotage-checked-page]

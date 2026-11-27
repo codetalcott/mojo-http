@@ -159,6 +159,7 @@ from m0_http.sse import format_sse_event
 from m0_core.json_escape import escape_json_string
 from m0_sqlite import (
     Connection,
+    Statement,
     TableWitness,
     UNCHANGED,
     install_stamps,
@@ -202,7 +203,15 @@ is a page and not the table."""
 
 comptime CHECK_WINDOW = 2 * LIST_PAGE
 """Rows the check compares with their copies: the page and as many again.
-One join over them, per answer after a write."""
+Read as two ordered scans, rows and copies, merged as they are read, per
+answer after a write."""
+
+comptime WINDOW_SQL = "SELECT id, title FROM notes ORDER BY id"
+"""The check's first scan: the rows, in id order."""
+
+comptime SEEN_SQL = "SELECT id, title FROM notes_seen ORDER BY id"
+"""Its second: the copies, in id order, merged with the rows as both are
+read. No row is probed for its copy, nor a copy for its row."""
 
 comptime DB_ENV = "M0_DB"
 comptime DB_DEFAULT = "table_notes.db"
@@ -293,6 +302,12 @@ struct Notes(ViewState):
     var _now: Int
     var _looked: Bool
     var _answer: Int
+    var _q_head: Statement
+    var _q_schema: Statement
+    var _q_window: Statement
+    var _q_seen: Statement
+    """Kept between answers on `reader`, and reset before and after each
+    use, so none holds a read past its answer."""
 
     def __init__(out self, path: String, worker: Int, capacity: Int) raises:
         self.writer = open(path)
@@ -327,6 +342,10 @@ struct Notes(ViewState):
         # without it SQLite reuses the highest rowid once its row is gone,
         # and a URL someone kept would name a different note.
         self.reader = open_readonly(path)
+        self._q_head = self.reader.prepare("SELECT seq FROM m0_stamp WHERE id = 0")
+        self._q_schema = self.reader.prepare("PRAGMA schema_version")
+        self._q_window = self.reader.prepare(WINDOW_SQL)
+        self._q_seen = self.reader.prepare(SEEN_SQL)
         self.rows = Cached()
         self.rows_head = 0
         self.witness = TableWitness(path, ["notes", "notes_seen"])
@@ -477,7 +496,7 @@ struct Notes(ViewState):
         else check and render it in this snapshot. The head is read here, so
         a raise by another thread, which writes neither table, renders the
         page again under the new head."""
-        var head = stamp_head(self.reader)
+        var head = self._head()
         if (
             self.rows.filled
             and head == self.rows_head
@@ -499,17 +518,32 @@ struct Notes(ViewState):
         same frames again."""
         self._looked = False
         try:
+            self._q_head.reset()
+            self._q_schema.reset()
+            self._q_window.reset()
+            self._q_seen.reset()
+        except:
+            pass
+        try:
             self.reader.rollback()
         except:
             pass
 
+    def _head(mut self) raises -> Int:
+        """`stamp_head`, on the kept statement."""
+        self._q_head.reset()
+        _ = self._q_head.step()
+        var head = self._q_head.column_int(0)
+        self._q_head.reset()
+        return head
+
     def _check(mut self, head: Int) raises:
         self.checks += 1
         var why = String()
-        var v = self.reader.prepare("PRAGMA schema_version")
-        _ = v.step()
-        var schema = v.column_int(0)
-        v.finalize()
+        self._q_schema.reset()
+        _ = self._q_schema.step()
+        var schema = self._q_schema.column_int(0)
+        self._q_schema.reset()
         var restored = head < self.highest or (self.schema >= 0 and schema != self.schema)
         if head < self.highest:
             why = String("the counter went back from ", self.highest, " to ", head, ": a restore")
@@ -519,34 +553,45 @@ struct Notes(ViewState):
                 ": a restore, or a migration",
             )
         var differ = List[Seen]()
-        var q = self.reader.prepare(
-            "SELECT n.id, n.title, s.title FROM notes n"
-            " LEFT JOIN notes_seen s ON s.id = n.id ORDER BY n.id LIMIT ?1"
-        )
-        q.bind_int(1, CHECK_WINDOW)
+        var gone = List[Seen]()
+        var ids = List[Int]()
+        var titles = List[String]()
+        # A copy below the next row has no row and is gone; a row with no
+        # copy at its id has none. The loop stops at the window's last row
+        # and its copy, so a copy above that row is never read, and reads
+        # every copy when the table is shorter than the window. The page is
+        # rendered from the same rows.
+        ref q = self._q_window
+        ref s = self._q_seen
+        q.reset()
+        s.reset()
         var shown = 0
-        var last = 0
-        while q.step():
+        var more_s = s.step()
+        while shown < CHECK_WINDOW and q.step():
+            var id = q.column_int(0)
+            while more_s and s.column_int(0) < id:
+                gone.append(Seen(s.column_int(0), False, String(), True, s.column_text(1)))
+                more_s = s.step()
             shown += 1
-            last = q.column_int(0)
             var title = q.column_text(1)
-            if q.is_null(2):
-                differ.append(Seen(last, True, title, False, String()))
-            else:
-                var copy = q.column_text(2)
+            if id > 0 and len(ids) <= LIST_PAGE:
+                ids.append(id)
+                titles.append(title.copy())
+            if more_s and s.column_int(0) == id:
+                var copy = s.column_text(1)
+                more_s = s.step()
                 if copy != title:
-                    differ.append(Seen(last, True, title^, True, copy^))
-        q.finalize()
-        # A copy whose row is gone, over the window's ids: all of them when
-        # the table is shorter than the window.
-        var g = self.reader.prepare(
-            "SELECT s.id, s.title FROM notes_seen s WHERE s.id <= ?1"
-            " AND NOT EXISTS (SELECT 1 FROM notes n WHERE n.id = s.id) ORDER BY s.id"
-        )
-        g.bind_int(1, last if shown == CHECK_WINDOW else Int.MAX)
-        while g.step():
-            differ.append(Seen(g.column_int(0), False, String(), True, g.column_text(1)))
-        g.finalize()
+                    differ.append(Seen(id, True, title^, True, copy^))
+            else:
+                differ.append(Seen(id, True, title^, False, String()))
+        if shown < CHECK_WINDOW:
+            while more_s:
+                gone.append(Seen(s.column_int(0), False, String(), True, s.column_text(1)))
+                more_s = s.step()
+        q.reset()
+        s.reset()
+        for ref d in gone:
+            differ.append(d.copy())
         if len(differ) > 0 and why.byte_length() == 0:
             ref d = differ[0]
             if not d.there:
@@ -581,7 +626,17 @@ struct Notes(ViewState):
         # The stamp and the rows in one snapshot: a row born after the stamp
         # would be in the page AND appended by the feed.
         self.rows_head = head
-        var body = render_list_reusing(self.reader, 0, head, self.items, self.rows_rendered)
+        var body: String
+        if shown == CHECK_WINDOW and len(ids) <= LIST_PAGE:
+            # The window holds fewer than a page and one of rows the list
+            # shows (ids above 0): the page needs rows past it.
+            body = render_list_reusing(self.reader, 0, head, self.items, self.rows_rendered)
+        else:
+            var more = len(ids) > LIST_PAGE
+            if more:
+                _ = ids.pop()
+                _ = titles.pop()
+            body = render_rows_reusing(ids, titles, more, 0, head, self.items, self.rows_rendered)
         _ = self.rows.fill(self._now, body^)
 
     def _set_copies(mut self, differ: List[Seen]) raises:
@@ -724,37 +779,54 @@ def render_list_reusing(
     rows. A row's `<li>` reads its id and title and nothing else, so those
     two are its key. The row itself says whether its rendering is current;
     no stamp does."""
-    var f = Frag(NOTES_ID)
-    f.raw(el("p", "", el("a", attr("href", NOTES_NEW), "New note")))
     var q = db.prepare("SELECT id, title FROM notes WHERE id > ?1 ORDER BY id LIMIT ?2")
     q.bind_int(1, after)
     q.bind_int(2, LIST_PAGE + 1)
-    var html = String()
-    var shown = 0
-    var last = after
+    var ids = List[Int]()
+    var titles = List[String]()
     var more = False
-    var kept = Dict[Int, Item]()
     while q.step():
-        if shown == LIST_PAGE:
+        if len(ids) == LIST_PAGE:
             more = True
             break
-        last = q.column_int(0)
-        var title = q.column_text(1)
+        ids.append(q.column_int(0))
+        titles.append(q.column_text(1))
+    q.finalize()
+    return render_rows_reusing(ids, titles, more, after, head, items, rendered)
+
+
+def render_rows_reusing(
+    ids: List[Int],
+    titles: List[String],
+    more: Bool,
+    after: Int,
+    head: Int,
+    mut items: Dict[Int, Item],
+    mut rendered: Int,
+) raises -> String:
+    """`render_list_reusing` from rows already read: at most `LIST_PAGE` of
+    them, in id order, after rowid `after`, and whether more follow."""
+    var f = Frag(NOTES_ID)
+    f.raw(el("p", "", el("a", attr("href", NOTES_NEW), "New note")))
+    var html = String()
+    var last = after
+    var kept = Dict[Int, Item]()
+    for i in range(len(ids)):
+        last = ids[i]
         var current = False
         if last in items:
-            current = items[last].title == title
+            current = items[last].title == titles[i]
         var li: String
         if current:
             li = items[last].li
         else:
-            li = render_item(f, last, title, String(""))
+            li = render_item(f, last, titles[i], String(""))
             rendered += 1
         html += li
-        kept[last] = Item(title^, li^)
-        shown += 1
+        kept[last] = Item(titles[i].copy(), li^)
     items = kept^
     f.raw(el("ul", attr("id", LIST_ID), html))
-    if shown == 0:
+    if len(ids) == 0:
         f.raw(el("p", attr("id", "none-yet"), text("none yet")))
     if more:
         var next = Query()
